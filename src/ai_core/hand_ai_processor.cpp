@@ -16,7 +16,6 @@
 #include "mediapipe/common/types.h"
 #include "mediapipe/detector/palm_detector.h"
 #include "mediapipe/landmark/hand_landmark.h"
-#include "mediapipe/preprocess/hw_preprocess.h"
 #include "mediapipe/preprocess/image_ops.h"
 #include "mediapipe/tracking/hand_tracker.h"
 
@@ -72,38 +71,26 @@ TrackingMode ConvertMode(mediapipe_demo::TrackingMode mode) {
   }
 }
 
-mediapipe_demo::CameraFrame ToCameraFrame(const FrameRef& frame) {
-  mediapipe_demo::CameraFrame cf;
-  cf.width = frame.width;
-  cf.height = frame.height;
-  cf.stride = frame.stride;
-  cf.fourcc = frame.fourcc;
-  cf.bytes_used = frame.bytes_used;
-  cf.dmabuf_fd = frame.dmabuf_fd;
-  cf.data = const_cast<uint8_t*>(frame.mapped_ptr);
-  return cf;
-}
-
-cv::Mat ToBgrMat(const FrameRef& frame) {
+cv::Mat ToRgbMat(const FrameRef& frame) {
   if (frame.mapped_ptr == nullptr || frame.width <= 0 || frame.height <= 0 || frame.stride <= 0) {
     return {};
   }
 
+  if (frame.pixel_format == PixelFormat::kRgb) {
+    return cv::Mat(frame.height, frame.width, CV_8UC3, const_cast<uint8_t*>(frame.mapped_ptr), frame.stride);
+  }
   if (frame.pixel_format == PixelFormat::kNv12) {
     cv::Mat nv12(frame.height * 3 / 2, frame.width, CV_8UC1,
                  const_cast<uint8_t*>(frame.mapped_ptr), frame.stride);
-    cv::Mat bgr;
-    cv::cvtColor(nv12, bgr, cv::COLOR_YUV2BGR_NV12);
-    return bgr;
+    cv::Mat rgb;
+    cv::cvtColor(nv12, rgb, cv::COLOR_YUV2RGB_NV12);
+    return rgb;
   }
   if (frame.pixel_format == PixelFormat::kBgr) {
-    return cv::Mat(frame.height, frame.width, CV_8UC3, const_cast<uint8_t*>(frame.mapped_ptr), frame.stride);
-  }
-  if (frame.pixel_format == PixelFormat::kRgb) {
-    cv::Mat rgb(frame.height, frame.width, CV_8UC3, const_cast<uint8_t*>(frame.mapped_ptr), frame.stride);
-    cv::Mat bgr;
-    cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
-    return bgr;
+    cv::Mat bgr(frame.height, frame.width, CV_8UC3, const_cast<uint8_t*>(frame.mapped_ptr), frame.stride);
+    cv::Mat rgb;
+    cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
+    return rgb;
   }
   return {};
 }
@@ -270,9 +257,7 @@ class HandAiProcessor final : public IAiProcessor {
                             mediapipe_demo::HandTracker& tracker,
                             mediapipe_demo::TrackingMode frame_mode,
                             const FrameRef& frame,
-                            const mediapipe_demo::CameraFrame& camera_frame,
-                            bool rga_available,
-                            std::function<cv::Mat&()> ensure_bgr) {
+                            std::function<cv::Mat&()> ensure_rgb) {
     HandResult hand;
     hand.hand_id = hand_id;
 
@@ -292,7 +277,6 @@ class HandAiProcessor final : public IAiProcessor {
                            roi_rect.y2 - roi_rect.y1);
     const cv::Size landmark_size(224, 224);
 
-    bool use_cpu_landmark_path = false;
     cv::Mat roi_for_landmark;
     cv::Mat inverse_affine;
     float align_rotation_deg = 0.0f;
@@ -306,7 +290,7 @@ class HandAiProcessor final : public IAiProcessor {
         point.y -= static_cast<float>(roi_rect.y1);
       }
 
-      cv::Mat roi_check = ensure_bgr();
+      cv::Mat roi_check = ensure_rgb();
       if (!roi_check.empty() &&
           roi_cv.x >= 0 && roi_cv.y >= 0 &&
           roi_cv.x + roi_cv.width <= roi_check.cols &&
@@ -318,9 +302,8 @@ class HandAiProcessor final : public IAiProcessor {
                                         -pipeline_config_.affine_max_abs_deg,
                                         pipeline_config_.affine_max_abs_deg);
         if (std::abs(align_rotation_deg) > 1.0f) {
-          cv::Mat roi = ensure_bgr()(roi_cv).clone();
+          cv::Mat roi = ensure_rgb()(roi_cv).clone();
           roi_for_landmark = mediapipe_demo::RotateRoi(roi, align_rotation_deg, &inverse_affine);
-          use_cpu_landmark_path = true;
         }
       }
     }
@@ -328,28 +311,20 @@ class HandAiProcessor final : public IAiProcessor {
     mediapipe_demo::PreprocessMeta lm_meta;
     std::optional<mediapipe_demo::HandLandmarks> landmarks;
 
-    if (!use_cpu_landmark_path && rga_available &&
-        mediapipe_demo::PreprocessFrameToRknn(camera_frame, roi_cv, false,
-                                              landmark_.InputMemory(), landmark_.InputAttr(),
-                                              &lm_meta) &&
-        landmark_.SyncInputMemory()) {
-      landmarks = landmark_.InferPrepared(lm_meta);
-    } else {
-      if (roi_for_landmark.empty()) {
-        cv::Mat& bgr_frame = ensure_bgr();
-        if (bgr_frame.empty() ||
-            roi_cv.x < 0 || roi_cv.y < 0 ||
-            roi_cv.x + roi_cv.width > bgr_frame.cols ||
-            roi_cv.y + roi_cv.height > bgr_frame.rows) {
-          tracker.MarkLost();
-          hand.tracking_mode = TrackingMode::kNoHand;
-          return hand;
-        }
-        roi_for_landmark = bgr_frame(roi_cv).clone();
+    if (roi_for_landmark.empty()) {
+      cv::Mat& rgb_frame = ensure_rgb();
+      if (rgb_frame.empty() ||
+          roi_cv.x < 0 || roi_cv.y < 0 ||
+          roi_cv.x + roi_cv.width > rgb_frame.cols ||
+          roi_cv.y + roi_cv.height > rgb_frame.rows) {
+        tracker.MarkLost();
+        hand.tracking_mode = TrackingMode::kNoHand;
+        return hand;
       }
-      cv::Mat lm_input = mediapipe_demo::PreprocessBgr(roi_for_landmark, landmark_size, &lm_meta);
-      landmarks = landmark_.Infer(lm_input, lm_meta);
+      roi_for_landmark = rgb_frame(roi_cv).clone();
     }
+    cv::Mat lm_input = mediapipe_demo::LetterboxPadding(roi_for_landmark, landmark_size, &lm_meta);
+    landmarks = landmark_.Infer(lm_input, lm_meta);
 
     if (!landmarks.has_value()) {
       tracker.MarkLost();
@@ -394,18 +369,12 @@ class HandAiProcessor final : public IAiProcessor {
   AiResult ProcessFrame(const FrameRef& frame) {
     auto started = std::chrono::steady_clock::now();
 
-    const bool rga_available = config_.allow_rga && frame.dmabuf_fd >= 0;
-    mediapipe_demo::CameraFrame camera_frame;
-    if (rga_available) {
-      camera_frame = ToCameraFrame(frame);
-    }
-
-    cv::Mat bgr;
-    auto ensure_bgr = [&]() -> cv::Mat& {
-      if (bgr.empty()) {
-        bgr = ToBgrMat(frame);
+    cv::Mat rgb;
+    auto ensure_rgb = [&]() -> cv::Mat& {
+      if (rgb.empty()) {
+        rgb = ToRgbMat(frame);
       }
-      return bgr;
+      return rgb;
     };
 
     const cv::Size detector_size(192, 192);
@@ -429,20 +398,11 @@ class HandAiProcessor final : public IAiProcessor {
 
     if (any_should_detect) {
       mediapipe_demo::PreprocessMeta det_meta;
-      const cv::Rect full_frame_rect(0, 0, frame.width, frame.height);
 
-      if (rga_available &&
-          mediapipe_demo::PreprocessFrameToRknn(camera_frame, full_frame_rect, true,
-                                                detector_.InputMemory(), detector_.InputAttr(),
-                                                &det_meta) &&
-          detector_.SyncInputMemory()) {
-        detections = detector_.InferPreparedMulti(pipeline_config_.detector_score_threshold, kMaxHands);
-      } else {
-        cv::Mat& bgr_frame = ensure_bgr();
-        if (!bgr_frame.empty()) {
-          cv::Mat det_input = mediapipe_demo::PreprocessBgr(bgr_frame, detector_size, &det_meta);
-          detections = detector_.InferMulti(det_input, det_meta, pipeline_config_.detector_score_threshold, kMaxHands);
-        }
+      cv::Mat& rgb_frame = ensure_rgb();
+      if (!rgb_frame.empty()) {
+        cv::Mat det_input = mediapipe_demo::LetterboxPadding(rgb_frame, detector_size, &det_meta);
+        detections = detector_.InferMulti(det_input, det_meta, pipeline_config_.detector_score_threshold, kMaxHands);
       }
 
       for (const auto& det : detections) {
@@ -472,7 +432,7 @@ class HandAiProcessor final : public IAiProcessor {
         continue;
       }
       mediapipe_demo::TrackingMode frame_mode = mediapipe_demo::TrackingMode::kTrack;
-      HandResult hand = ProcessOneHand(i, *trackers_[i], frame_mode, frame, camera_frame, rga_available, ensure_bgr);
+      HandResult hand = ProcessOneHand(i, *trackers_[i], frame_mode, frame, ensure_rgb);
       if (hand.tracking_mode != TrackingMode::kNoHand || !hand.landmarks.empty()) {
         result.hands.push_back(std::move(hand));
       }

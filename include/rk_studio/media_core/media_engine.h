@@ -96,6 +96,7 @@ class MediaEngine : public QObject {
   std::mutex ai_frame_mu_;
   std::chrono::steady_clock::time_point last_ai_frame_emit_{};
   bool ai_enabled_ = false;
+  bool allow_rga_ = false;
   std::unique_ptr<RtspServer> rtsp_server_;
 };
 

@@ -16,4 +16,10 @@ bool PreprocessFrameToRknn(const CameraFrame& frame,
                            const rknn_tensor_attr& dst_attr,
                            PreprocessMeta* meta);
 
+// Full-frame NV12→RGB conversion via RGA hardware.
+// On success, writes an RGB888 cv::Mat (h × w × 3) to *rgb_out and returns true.
+// Falls back gracefully: returns false if RGA is unavailable or dmabuf_fd < 0.
+bool ConvertNv12ToRgb(int dmabuf_fd, int width, int height, int stride,
+                      cv::Mat* rgb_out);
+
 }  // namespace mediapipe_demo

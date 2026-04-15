@@ -11,6 +11,8 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include <gst/allocators/gstdmabuf.h>
+
 #include "rk_studio/ai_core/ai_processor.h"
 #include "rk_studio/infra/gst_audio_recorder.h"
 #include "rk_studio/infra/runtime.h"
@@ -18,12 +20,21 @@
 #include "rk_studio/infra/session_files.h"
 #include "rk_studio/infra/telemetry.h"
 #include "rk_studio/media_core/session_writer.h"
+#include "mediapipe/preprocess/hw_preprocess.h"
 
 namespace rkstudio::media {
 namespace {
 
 bool Contains(const std::vector<std::string>& items, const std::string& value) {
   return std::find(items.begin(), items.end(), value) != items.end();
+}
+
+int ExtractDmabufFd(GstBuffer* buffer) {
+  GstMemory* mem = gst_buffer_peek_memory(buffer, 0);
+  if (mem != nullptr && gst_is_dmabuf_memory(mem)) {
+    return gst_dmabuf_memory_get_fd(mem);
+  }
+  return -1;
 }
 
 std::vector<rkinfra::OutputStreamInfo> CollectOutputs(
@@ -425,10 +436,11 @@ bool MediaEngine::StartAiProcessor() {
   }
 
   const auto& ai_hw = *board_config_.ai;
+  allow_rga_ = ai_hw.allow_rga;
+
   ai::AiProcessorConfig config;
   config.detector_model = ai_hw.detector_model;
   config.landmark_model = ai_hw.landmark_model;
-  config.allow_rga = ai_hw.allow_rga;
   config.queue_depth = 1;
 
   ai_processor_ = ai::CreateHandAiProcessor();
@@ -462,59 +474,65 @@ void MediaEngine::OnAiSample(GstSample* sample) {
   GstBuffer* buffer = gst_sample_get_buffer(sample);
   GstCaps* caps = gst_sample_get_caps(sample);
   if (!buffer || !caps) {
-    std::cerr << "[ai] OnAiSample: no buffer or caps\n";
     return;
   }
 
   GstVideoInfo info;
   if (!gst_video_info_from_caps(&info, caps)) {
-    std::cerr << "[ai] OnAiSample: failed to parse video info from caps\n";
-    return;
-  }
-
-  GstMapInfo map{};
-  if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
-    std::cerr << "[ai] OnAiSample: failed to map buffer\n";
     return;
   }
 
   const int w = GST_VIDEO_INFO_WIDTH(&info);
   const int h = GST_VIDEO_INFO_HEIGHT(&info);
   const int stride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 0);
-  const uint64_t pts_ns = GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer)) ? GST_BUFFER_PTS(buffer) : 0;
+  const uint64_t pts_ns = GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer))
+                              ? GST_BUFFER_PTS(buffer) : 0;
 
-  // Single NV12→BGR conversion shared between AI processor and UI display.
-  cv::Mat bgr;
-  if (w > 0 && h > 0 && map.size >= static_cast<size_t>(stride * h * 3 / 2)) {
-    cv::Mat nv12(h * 3 / 2, w, CV_8UC1, map.data, stride);
-    cv::cvtColor(nv12, bgr, cv::COLOR_YUV2BGR_NV12);
+  // Try RGA hardware NV12→RGB conversion (dmabuf path).
+  cv::Mat rgb;
+  bool rga_ok = false;
+  if (allow_rga_) {
+    const int fd = ExtractDmabufFd(buffer);
+    if (fd >= 0) {
+      rga_ok = mediapipe_demo::ConvertNv12ToRgb(fd, w, h, stride, &rgb);
+    }
   }
 
-  gst_buffer_unmap(buffer, &map);
+  // Fallback: CPU NV12→RGB.
+  if (!rga_ok) {
+    GstMapInfo map{};
+    if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+      return;
+    }
+    if (w > 0 && h > 0 && map.size >= static_cast<size_t>(stride * h * 3 / 2)) {
+      cv::Mat nv12(h * 3 / 2, w, CV_8UC1, map.data, stride);
+      cv::cvtColor(nv12, rgb, cv::COLOR_YUV2RGB_NV12);
+    }
+    gst_buffer_unmap(buffer, &map);
+  }
 
-  if (bgr.empty()) {
+  if (rgb.empty()) {
     return;
   }
 
-  // Submit BGR to AI processor — zero-copy: shared_ptr keeps the Mat alive,
-  // ToBgrMat() in the processor wraps the pointer at zero cost.
-  auto bgr_holder = std::make_shared<cv::Mat>(std::move(bgr));
+  // Submit RGB to AI processor — shared_ptr keeps the Mat alive.
+  auto rgb_holder = std::make_shared<cv::Mat>(std::move(rgb));
   ai::FrameRef frame;
   frame.camera_id = ai_camera_id_;
   frame.pts_ns = pts_ns;
   frame.width = w;
   frame.height = h;
-  frame.stride = static_cast<int>(bgr_holder->step[0]);
-  frame.pixel_format = ai::PixelFormat::kBgr;
-  frame.mapped_ptr = bgr_holder->data;
-  frame.bytes_used = bgr_holder->total() * bgr_holder->elemSize();
-  frame.owned_data = bgr_holder;
+  frame.stride = static_cast<int>(rgb_holder->step[0]);
+  frame.pixel_format = ai::PixelFormat::kRgb;
+  frame.mapped_ptr = rgb_holder->data;
+  frame.bytes_used = rgb_holder->total() * rgb_holder->elemSize();
+  frame.owned_data = rgb_holder;
   ai_processor_->Submit(frame);
 
-  // Derive QImage from the same BGR (cheap channel swap).
-  cv::Mat rgb;
-  cv::cvtColor(*bgr_holder, rgb, cv::COLOR_BGR2RGB);
-  QImage image(rgb.data, w, h, static_cast<int>(rgb.step), QImage::Format_RGB888);
+  // QImage from the same RGB data (Format_RGB888 matches directly).
+  QImage image(rgb_holder->data, w, h,
+               static_cast<int>(rgb_holder->step[0]),
+               QImage::Format_RGB888);
   {
     std::lock_guard<std::mutex> lock(ai_frame_mu_);
     latest_ai_frame_ = image.copy();

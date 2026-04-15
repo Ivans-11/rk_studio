@@ -39,7 +39,6 @@ struct AiProcessorConfig {
   std::string detector_model;
   std::string landmark_model;
   int queue_depth = 1;
-  bool allow_rga = true;
 };
 
 struct RoiRect {

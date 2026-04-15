@@ -381,4 +381,68 @@ bool PreprocessFrameToRknn(const CameraFrame& frame,
 #endif
 }
 
+bool ConvertNv12ToRgb(int dmabuf_fd, int width, int height, int stride,
+                      cv::Mat* rgb_out) {
+  std::lock_guard<std::mutex> lock(g_hw_preprocess_mutex);
+
+  if (dmabuf_fd < 0 || rgb_out == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+  if (!g_hw_preprocess_available) {
+    return false;
+  }
+
+#if !defined(__linux__)
+  return false;
+#else
+  const size_t dst_size = static_cast<size_t>(width) * height * 3;
+  ScratchDmabuf* scratch = AcquireScratchBuffer(dst_size,
+                                                width, height,
+                                                width, height,
+                                                RK_FORMAT_RGB_888);
+  if (scratch == nullptr) {
+    g_hw_preprocess_available = false;
+    return false;
+  }
+
+  rga_buffer_t src = wrapbuffer_fd_t(dmabuf_fd,
+                                     width, height,
+                                     stride, height,
+                                     RK_FORMAT_YCbCr_420_SP);
+  rga_buffer_t dst = wrapbuffer_fd_t(scratch->fd(),
+                                     scratch->width(),
+                                     scratch->height(),
+                                     scratch->wstride(),
+                                     scratch->hstride(),
+                                     scratch->format());
+
+  im_rect srect{0, 0, width, height};
+  im_rect drect{0, 0, width, height};
+  im_rect prect{0, 0, 0, 0};
+  rga_buffer_t pat;
+  std::memset(&pat, 0, sizeof(pat));
+
+  const IM_STATUS check = imcheck_t(src, dst, pat, srect, drect, prect, 0);
+  if (!IsRgaSuccess(check)) {
+    std::cerr << "RGA ConvertNv12ToRgb imcheck failed: "
+              << imStrError(check) << "\n";
+    g_hw_preprocess_available = false;
+    return false;
+  }
+
+  const IM_STATUS status = improcess(src, dst, pat, srect, drect, prect, 0);
+  if (!IsRgaSuccess(status)) {
+    std::cerr << "RGA ConvertNv12ToRgb improcess failed: "
+              << imStrError(status) << "\n";
+    g_hw_preprocess_available = false;
+    return false;
+  }
+
+  // Clone: scratch is a pooled static buffer reused across frames.
+  cv::Mat rgb(height, width, CV_8UC3, scratch->addr(), static_cast<size_t>(width) * 3);
+  *rgb_out = rgb.clone();
+  return true;
+#endif
+}
+
 }  // namespace mediapipe_demo
