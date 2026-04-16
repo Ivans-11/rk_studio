@@ -183,6 +183,7 @@ void MainWindow::LoadConfigFiles() {
   media_engine_->LoadBoardConfig(board_config);
   media_engine_->ApplySessionProfile(profile);
   RebuildTiles();
+  OnStateChanged(media_engine_->state());
   SetStatus(QString("已加载 %1 路摄像头").arg(profile.preview_cameras.size()));
 }
 
@@ -238,7 +239,7 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
     t[rkstudio::AppState::kIdle] = {
         "Idle",
         QStringLiteral("启动预览"), true,
-        QStringLiteral("启动录制"), false,
+        QStringLiteral("启动录制"), true,
         QStringLiteral("启动 RTSP"), true,
         false};
     t[rkstudio::AppState::kPreviewing] = {

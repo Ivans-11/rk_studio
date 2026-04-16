@@ -1,0 +1,13 @@
+# Build output
+build/
+
+# User-specific config (use *.example.toml as template)
+config/board.toml
+config/profile.toml
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

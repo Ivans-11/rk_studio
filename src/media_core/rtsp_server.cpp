@@ -134,7 +134,10 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
   int total_bitrate = 0;
   for (const auto* cam : cams) total_bitrate += cam->bitrate;
 
-  const std::string launch = BuildMosaicLaunchString(cams, codec, gop, total_bitrate);
+  // Use RTSP-specific bitrate if configured, otherwise fall back to sum.
+  const int stream_bitrate = rtsp.bitrate > 0 ? rtsp.bitrate : total_bitrate;
+
+  const std::string launch = BuildMosaicLaunchString(cams, codec, gop, stream_bitrate);
   const std::string path = "/cam";
 
   GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();

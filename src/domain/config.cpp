@@ -1,6 +1,7 @@
 #include "rk_studio/domain/config.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <string_view>
 #include <unordered_set>
 
@@ -8,6 +9,24 @@
 
 namespace rkstudio {
 namespace {
+
+namespace fs = std::filesystem;
+
+// Resolve a model file relative to the board config directory.
+// Search order: models/<name> next to config, then ../models/<name> from config.
+std::string ResolveModelPath(const std::string& config_path, const std::string& filename) {
+  const fs::path config_dir = fs::path(config_path).parent_path();
+  const fs::path candidates[] = {
+      config_dir / "models" / filename,
+      config_dir / ".." / "models" / filename,
+  };
+  for (const auto& candidate : candidates) {
+    if (fs::exists(candidate)) {
+      return fs::canonical(candidate).string();
+    }
+  }
+  return {};
+}
 
 bool RejectUnknownKeys(const toml::table& table,
                       const std::unordered_set<std::string>& allowed,
@@ -243,27 +262,43 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
   }
 
   if (const auto* ai_table = root["ai"].as_table()) {
-    static const std::unordered_set<std::string> kAllowed{"detector_model", "landmark_model", "allow_rga"};
+    static const std::unordered_set<std::string> kAllowed{"detector_model", "landmark_model"};
     if (!RejectUnknownKeys(*ai_table, kAllowed, "ai", err)) {
       return false;
     }
     AiHardwareConfig ai;
     if (!AssignValue(*ai_table, "detector_model", &ai.detector_model, "ai", err) ||
-        !AssignValue(*ai_table, "landmark_model", &ai.landmark_model, "ai", err) ||
-        !AssignValue(*ai_table, "allow_rga", &ai.allow_rga, "ai", err)) {
+        !AssignValue(*ai_table, "landmark_model", &ai.landmark_model, "ai", err)) {
       return false;
     }
     parsed.ai = ai;
   }
 
+  // Auto-resolve AI model paths from models/ directory if not explicitly set.
+  if (!parsed.ai.has_value()) {
+    parsed.ai = AiHardwareConfig{};
+  }
+  auto& ai = *parsed.ai;
+  if (ai.detector_model.empty()) {
+    ai.detector_model = ResolveModelPath(path, "hand_detector.rknn");
+  }
+  if (ai.landmark_model.empty()) {
+    ai.landmark_model = ResolveModelPath(path, "hand_landmarks.rknn");
+  }
+  // If neither model was found, disable AI.
+  if (ai.detector_model.empty() && ai.landmark_model.empty()) {
+    parsed.ai.reset();
+  }
+
   if (const auto* rtsp_table = root["rtsp"].as_table()) {
-    static const std::unordered_set<std::string> kAllowed{"port", "codec"};
+    static const std::unordered_set<std::string> kAllowed{"port", "codec", "bitrate"};
     if (!RejectUnknownKeys(*rtsp_table, kAllowed, "rtsp", err)) {
       return false;
     }
     RtspConfig rtsp;
     if (!AssignValue(*rtsp_table, "port", &rtsp.port, "rtsp", err) ||
-        !AssignValue(*rtsp_table, "codec", &rtsp.codec, "rtsp", err)) {
+        !AssignValue(*rtsp_table, "codec", &rtsp.codec, "rtsp", err) ||
+        !AssignValue(*rtsp_table, "bitrate", &rtsp.bitrate, "rtsp", err)) {
       return false;
     }
     parsed.rtsp = rtsp;

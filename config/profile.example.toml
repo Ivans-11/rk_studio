@@ -1,0 +1,14 @@
+[session]
+preview_cameras = ["cam0", "cam1", "cam2", "cam3"]
+record_cameras = ["cam0", "cam1", "cam2", "cam3"]
+output_dir = "./records"
+prefix = "rk_studio"
+audio_source = ""
+selected_ai_camera = "cam0"
+
+[encoder]
+gop = 30
+
+[ui]
+preview_rows = 2
+preview_cols = 2

@@ -34,14 +34,14 @@ struct CameraNodeSet {
 using AudioSource = rkinfra::AudioConfig;
 
 struct AiHardwareConfig {
-  std::string detector_model;
-  std::string landmark_model;
-  bool allow_rga = true;
+  std::string detector_model;   // resolved at runtime if empty
+  std::string landmark_model;   // resolved at runtime if empty
 };
 
 struct RtspConfig {
   int port = 8554;
   std::string codec = "h265";
+  int bitrate = 4'000'000;
 };
 
 struct BoardConfig {

@@ -2,16 +2,17 @@
 [sink]
 priority = ["ximagesink", "glimagesink"]
 
-# AI hand detection models.
-[ai]
-detector_model = "/home/cat/mediapipe/hand_detector.rknn"
-landmark_model = "/home/cat/mediapipe/hand_landmarks.rknn"
-allow_rga = true
+# AI hand detection models are auto-resolved from models/ directory.
+# To override, uncomment:
+# [ai]
+# detector_model = "/path/to/hand_detector.rknn"
+# landmark_model = "/path/to/hand_landmarks.rknn"
 
 # RTSP streaming.
 [rtsp]
 port = 8554
 codec = "h265"
+bitrate = 4000000
 
 # Microphone input used by the recording session.
 [audio.mic0]

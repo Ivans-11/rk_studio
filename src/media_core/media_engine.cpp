@@ -436,7 +436,6 @@ bool MediaEngine::StartAiProcessor() {
   }
 
   const auto& ai_hw = *board_config_.ai;
-  allow_rga_ = ai_hw.allow_rga;
 
   ai::AiProcessorConfig config;
   config.detector_model = ai_hw.detector_model;
@@ -463,7 +462,10 @@ void MediaEngine::StopAiProcessor() {
     ai_processor_.reset();
     std::cerr << "[ai] processor stopped\n";
   }
-  ai_camera_id_.clear();
+  {
+    std::lock_guard<std::mutex> lock(ai_frame_mu_);
+    ai_camera_id_.clear();
+  }
 }
 
 void MediaEngine::OnAiSample(GstSample* sample) {
@@ -491,11 +493,18 @@ void MediaEngine::OnAiSample(GstSample* sample) {
   // Try RGA hardware NV12→RGB conversion (dmabuf path).
   cv::Mat rgb;
   bool rga_ok = false;
-  if (allow_rga_) {
+  {
     const int fd = ExtractDmabufFd(buffer);
     if (fd >= 0) {
       rga_ok = mediapipe_demo::ConvertNv12ToRgb(fd, w, h, stride, &rgb);
     }
+  }
+
+  // Log once which path is active.
+  static bool logged_path = false;
+  if (!logged_path) {
+    std::cerr << "[ai] NV12→RGB path: " << (rga_ok ? "RGA hardware" : "CPU fallback") << "\n";
+    logged_path = true;
   }
 
   // Fallback: CPU NV12→RGB.
@@ -504,7 +513,7 @@ void MediaEngine::OnAiSample(GstSample* sample) {
     if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
       return;
     }
-    if (w > 0 && h > 0 && map.size >= static_cast<size_t>(stride * h * 3 / 2)) {
+    if (w > 0 && h > 0 && map.size >= static_cast<size_t>(stride) * h * 3 / 2) {
       cv::Mat nv12(h * 3 / 2, w, CV_8UC1, map.data, stride);
       cv::cvtColor(nv12, rgb, cv::COLOR_YUV2RGB_NV12);
     }
@@ -518,7 +527,10 @@ void MediaEngine::OnAiSample(GstSample* sample) {
   // Submit RGB to AI processor — shared_ptr keeps the Mat alive.
   auto rgb_holder = std::make_shared<cv::Mat>(std::move(rgb));
   ai::FrameRef frame;
-  frame.camera_id = ai_camera_id_;
+  {
+    std::lock_guard<std::mutex> lock(ai_frame_mu_);
+    frame.camera_id = ai_camera_id_;
+  }
   frame.pts_ns = pts_ns;
   frame.width = w;
   frame.height = h;
