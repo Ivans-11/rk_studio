@@ -313,18 +313,60 @@ void MainWindow::ToggleAi() {
   const bool enabling = !media_engine_->ai_enabled();
   ai_toggle_button_->setText(enabling ? QStringLiteral("关闭 Mediapipe") : QStringLiteral("启动 Mediapipe"));
 
-  const bool was_previewing = media_engine_->state() == rkstudio::AppState::kPreviewing;
-  if (was_previewing) {
-    media_engine_->StopAll();
+  if (media_engine_->state() == rkstudio::AppState::kPreviewing) {
+    SwapAiTile(enabling);
   }
-  media_engine_->SetAiEnabled(enabling);
-  RebuildTiles();
-  if (was_previewing) {
-    QCoreApplication::processEvents();
-    std::string err;
-    if (!media_engine_->StartPreview(&err)) {
-      QMessageBox::warning(this, QStringLiteral("AI 切换失败"), QString::fromStdString(err));
+
+  std::string err;
+  if (!media_engine_->ToggleAi(enabling, &err)) {
+    QMessageBox::warning(this, QStringLiteral("AI 切换失败"), QString::fromStdString(err));
+  }
+}
+
+void MainWindow::SwapAiTile(bool enabling) {
+  const auto& profile = media_engine_->session_profile();
+  const QString ai_cam = QString::fromStdString(profile.selected_ai_camera);
+  if (ai_cam.isEmpty()) return;
+
+  QGridLayout* grid = qobject_cast<QGridLayout*>(grid_container_->layout());
+  if (!grid) return;
+
+  // Find the AI camera's position in the grid.
+  const int cols = std::max(1, profile.preview_cols);
+  int target_row = -1, target_col = -1;
+  for (size_t i = 0; i < profile.preview_cameras.size(); ++i) {
+    if (profile.preview_cameras[i] == profile.selected_ai_camera) {
+      target_row = static_cast<int>(i / cols);
+      target_col = static_cast<int>(i % cols);
+      break;
     }
+  }
+  if (target_row < 0) return;
+
+  // Remove old widget from that cell.
+  if (QLayoutItem* item = grid->itemAtPosition(target_row, target_col)) {
+    if (QWidget* old_widget = item->widget()) {
+      grid->removeWidget(old_widget);
+      old_widget->setParent(nullptr);
+      delete old_widget;
+    }
+  }
+
+  // Remove from tile map if present.
+  tiles_.erase(ai_cam);
+  ai_canvas_ = nullptr;
+
+  if (enabling) {
+    auto* canvas = new AiCanvasWidget(grid_container_);
+    canvas->setMinimumSize(320, 180);
+    grid->addWidget(canvas, target_row, target_col);
+    ai_canvas_ = canvas;
+  } else {
+    auto* tile = new PreviewTileWidget(ai_cam, grid_container_);
+    connect(tile, &PreviewTileWidget::WindowRebound, this, &MainWindow::OnTileRebound);
+    grid->addWidget(tile, target_row, target_col);
+    tiles_.insert_or_assign(ai_cam, tile);
+    media_engine_->BindPreviewWindow(profile.selected_ai_camera, tile->sink_window_id());
   }
 }
 

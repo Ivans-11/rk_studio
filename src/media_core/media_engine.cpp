@@ -148,10 +148,7 @@ bool MediaEngine::StartPreview(std::string* err) {
     return false;
   }
 
-  StartAiProcessor();
-
   if (!RebuildPipelines(false, err)) {
-    StopAiProcessor();
     state_ = AppState::kError;
     emit StateChanged(state_);
     return false;
@@ -180,10 +177,6 @@ bool MediaEngine::StartRecording(std::string* err) {
     StopPipelines();
   }
 
-  if (!ai_processor_) {
-    StartAiProcessor();
-  }
-
   session_writer_ = std::make_unique<SessionWriter>();
   if (!session_writer_->Initialize(board_config_, session_profile_, err)) {
     session_writer_.reset();
@@ -199,25 +192,9 @@ bool MediaEngine::StartRecording(std::string* err) {
     return false;
   }
 
-  const auto* config = session_writer_->compat_config();
-  if (config && config->audio.has_value()) {
-    audio_recorder_ = std::make_unique<rkinfra::GstAudioRecorder>(
-        *config->audio, config->queue.audio_mux_max_time_ns,
-        [this](rkinfra::StreamEvent event) {
-          event.category = "audio";
-          EmitTelemetry(event);
-        },
-        session_writer_->session_paths()->session_dir);
-    std::string audio_err;
-    if (!audio_recorder_->Build(&audio_err) || !audio_recorder_->Start(&audio_err)) {
-      if (err != nullptr) {
-        *err = audio_err;
-      }
-      FinalizeRecording(false);
-      return false;
-    }
-  } else {
-    audio_recorder_.reset();
+  if (!StartAudioRecorder(err)) {
+    FinalizeRecording(false);
+    return false;
   }
 
   const auto outputs = CollectOutputs(cameras_, audio_recorder_.get());
@@ -246,7 +223,6 @@ bool MediaEngine::StartRtsp(std::string* err) {
   }
 
   if (state_ == AppState::kPreviewing) {
-    StopAiProcessor();
     ai_poll_timer_->stop();
     StopPipelines();
   }
@@ -286,8 +262,8 @@ void MediaEngine::StopAll() {
     StopRtsp();
     return;
   }
-  StopAiProcessor();
   StopPipelines();
+  StopAiProcessor();
   state_ = AppState::kIdle;
   emit StateChanged(state_);
 }
@@ -312,65 +288,79 @@ AppState MediaEngine::state() const {
   return state_;
 }
 
+std::unique_ptr<CameraPipeline> MediaEngine::BuildOnePipeline(
+    const std::string& camera_id, bool recording, std::string* err) {
+  const CameraNodeSet* camera = FindCamera(board_config_, camera_id);
+  if (camera == nullptr) {
+    if (err != nullptr) {
+      *err = "unknown camera id: " + camera_id;
+    }
+    return nullptr;
+  }
+
+  auto pipeline = std::make_unique<CameraPipeline>();
+  CameraPipeline::BuildOptions options;
+  options.camera = *camera;
+  options.sink_priority = board_config_.sink_priority;
+  options.session_dir = (session_writer_ && session_writer_->session_paths())
+      ? session_writer_->session_paths()->session_dir
+      : std::filesystem::path(session_profile_.output_dir);
+  if (const auto it = preview_window_ids_.find(camera_id); it != preview_window_ids_.end()) {
+    options.preview_window_id = it->second;
+  }
+  options.enable_preview = !recording
+                           && preview_window_ids_.count(camera_id) > 0
+                           && Contains(session_profile_.preview_cameras, camera_id)
+                           && camera_id != ai_camera_id_;
+  options.enable_record = recording && Contains(session_profile_.record_cameras, camera_id);
+  options.gop = session_profile_.gop;
+
+  if (camera_id == ai_camera_id_ && ai_processor_) {
+    options.enable_ai = true;
+    options.ai_sample_callback = [this](GstSample* sample) { OnAiSample(sample); };
+  }
+
+  if (!pipeline->Build(
+          options, [this](const TelemetryEvent& event) { EmitTelemetry(event); },
+          [this, camera_id](const std::string& reason, bool fatal) {
+            QMetaObject::invokeMethod(
+                this,
+                [this, camera_id, reason, fatal] { OnCameraError(camera_id, reason, fatal); },
+                Qt::QueuedConnection);
+          },
+          err)) {
+    return nullptr;
+  }
+
+  return pipeline;
+}
+
 bool MediaEngine::RebuildPipelines(bool recording, std::string* err) {
   StopPipelines();
 
   const std::vector<std::string> camera_ids = recording ? UnionCameraIds(session_profile_) : session_profile_.preview_cameras;
   for (const auto& camera_id : camera_ids) {
-    const CameraNodeSet* camera = FindCamera(board_config_, camera_id);
-    if (camera == nullptr) {
-      if (err != nullptr) {
-        *err = "unknown camera id: " + camera_id;
-      }
+    auto pipeline = BuildOnePipeline(camera_id, recording, err);
+    if (!pipeline || !pipeline->Start(err)) {
       StopPipelines();
       return false;
     }
-
-    auto pipeline = std::make_unique<CameraPipeline>();
-    CameraPipeline::BuildOptions options;
-    options.camera = *camera;
-    options.sink_priority = board_config_.sink_priority;
-    options.session_dir = (session_writer_ && session_writer_->session_paths())
-        ? session_writer_->session_paths()->session_dir
-        : std::filesystem::path(session_profile_.output_dir);
-    if (const auto it = preview_window_ids_.find(camera_id); it != preview_window_ids_.end()) {
-      options.preview_window_id = it->second;
-    }
-    options.enable_preview = !recording
-                             && preview_window_ids_.count(camera_id) > 0
-                             && Contains(session_profile_.preview_cameras, camera_id)
-                             && camera_id != ai_camera_id_;
-    options.enable_record = recording && Contains(session_profile_.record_cameras, camera_id);
-    options.gop = session_profile_.gop;
-
-    if (camera_id == ai_camera_id_ && ai_processor_) {
-      options.enable_ai = true;
-      options.ai_sample_callback = [this](GstSample* sample) { OnAiSample(sample); };
-    }
-
-    if (!pipeline->Build(
-            options, [this](const TelemetryEvent& event) { EmitTelemetry(event); },
-            [this, camera_id](const std::string& reason, bool fatal) {
-              QMetaObject::invokeMethod(
-                  this,
-                  [this, camera_id, reason, fatal] { OnCameraError(camera_id, reason, fatal); },
-                  Qt::QueuedConnection);
-            },
-            err) ||
-        !pipeline->Start(err)) {
-      StopPipelines();
-      return false;
-    }
-
     cameras_.insert_or_assign(camera_id, std::move(pipeline));
   }
 
   return true;
 }
 
+void MediaEngine::StopOnePipeline(const std::string& camera_id) {
+  if (auto it = cameras_.find(camera_id); it != cameras_.end()) {
+    it->second->Stop();
+    cameras_.erase(it);
+  }
+}
+
 void MediaEngine::StopPipelines() {
-  for (auto& [camera_id, pipeline] : cameras_) {
-    (void)camera_id;
+  for (auto& [id, pipeline] : cameras_) {
+    (void)id;
     pipeline->Stop();
   }
   cameras_.clear();
@@ -404,28 +394,82 @@ void MediaEngine::FinalizeRecording(bool ok) {
   ai_poll_timer_->stop();
   const auto outputs = CollectOutputs(cameras_, audio_recorder_.get());
 
-  if (audio_recorder_) {
-    audio_recorder_->RequestStop();
-  }
+  StopAudioRecorder();
   StopPipelines();
-  if (audio_recorder_) {
-    audio_recorder_->Stop();
-  }
-  audio_recorder_.reset();
 
   if (session_writer_) {
     session_writer_->Finalize(ok, outputs);
     session_writer_.reset();
   }
 
-  StopAiProcessor();
-
   state_ = ok ? AppState::kIdle : AppState::kError;
   emit StateChanged(state_);
 }
 
-void MediaEngine::SetAiEnabled(bool enabled) {
-  ai_enabled_ = enabled;
+bool MediaEngine::StartAudioRecorder(std::string* err) {
+  const auto* config = session_writer_ ? session_writer_->compat_config() : nullptr;
+  if (!config || !config->audio.has_value() || !session_writer_->session_paths()) {
+    audio_recorder_.reset();
+    return true;  // no audio configured — not an error
+  }
+
+  audio_recorder_ = std::make_unique<rkinfra::GstAudioRecorder>(
+      *config->audio, config->queue.audio_mux_max_time_ns,
+      [this](rkinfra::StreamEvent event) {
+        event.category = "audio";
+        EmitTelemetry(event);
+      },
+      session_writer_->session_paths()->session_dir);
+
+  std::string audio_err;
+  if (!audio_recorder_->Build(&audio_err) || !audio_recorder_->Start(&audio_err)) {
+    if (err) *err = audio_err;
+    audio_recorder_.reset();
+    return false;
+  }
+  return true;
+}
+
+void MediaEngine::StopAudioRecorder() {
+  if (!audio_recorder_) return;
+  audio_recorder_->RequestStop();
+  audio_recorder_->Stop();
+  audio_recorder_.reset();
+}
+
+bool MediaEngine::ToggleAi(bool enable, std::string* err) {
+  const std::string ai_cam_id = session_profile_.selected_ai_camera;
+  if (ai_cam_id.empty()) {
+    if (err) *err = "no AI camera configured";
+    return false;
+  }
+
+  // Stop the AI camera's pipeline only.
+  StopOnePipeline(ai_cam_id);
+
+  ai_enabled_ = enable;
+
+  if (enable) {
+    if (!ai_processor_) {
+      StartAiProcessor();
+    }
+  } else {
+    ai_poll_timer_->stop();
+    StopAiProcessor();
+  }
+
+  // Rebuild just this one camera's pipeline.
+  auto pipeline = BuildOnePipeline(ai_cam_id, false, err);
+  if (!pipeline || !pipeline->Start(err)) {
+    return false;
+  }
+  cameras_.insert_or_assign(ai_cam_id, std::move(pipeline));
+
+  if (enable && ai_processor_) {
+    ai_poll_timer_->start();
+  }
+
+  return true;
 }
 
 bool MediaEngine::StartAiProcessor() {

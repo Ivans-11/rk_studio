@@ -55,7 +55,7 @@ class MediaEngine : public QObject {
   void StopAll();
 
   void BindPreviewWindow(const std::string& camera_id, WId window_id);
-  void SetAiEnabled(bool enabled);
+  bool ToggleAi(bool enable, std::string* err);
   bool ai_enabled() const { return ai_enabled_; }
   const BoardConfig& board_config() const;
   const SessionProfile& session_profile() const;
@@ -72,6 +72,9 @@ class MediaEngine : public QObject {
   using CameraMap = std::map<std::string, std::unique_ptr<CameraPipeline>>;
 
   bool RebuildPipelines(bool recording, std::string* err);
+  std::unique_ptr<CameraPipeline> BuildOnePipeline(
+      const std::string& camera_id, bool recording, std::string* err);
+  void StopOnePipeline(const std::string& camera_id);
   void StopPipelines();
   void EmitTelemetry(const TelemetryEvent& event);
   void OnCameraError(const std::string& camera_id, const std::string& reason, bool fatal);
@@ -79,6 +82,8 @@ class MediaEngine : public QObject {
 
   bool StartAiProcessor();
   void StopAiProcessor();
+  bool StartAudioRecorder(std::string* err);
+  void StopAudioRecorder();
   void OnAiSample(GstSample* sample);
   void PollAiResults();
 

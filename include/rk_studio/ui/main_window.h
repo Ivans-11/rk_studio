@@ -36,6 +36,7 @@ class MainWindow : public QMainWindow {
  private:
   void BuildUi();
   void RebuildTiles();
+  void SwapAiTile(bool enabling);
   void SetStatus(const QString& text);
   void AppendLog(const QString& line);
 
