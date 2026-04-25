@@ -2,17 +2,26 @@
 [sink]
 priority = ["ximagesink", "glimagesink"]
 
-# AI hand detection models are auto-resolved from models/ directory.
+# Mediapipe hand detection models are auto-resolved from models/ directory.
 # To override, uncomment:
-# [ai]
+# [mediapipe]
 # detector_model = "/path/to/hand_detector.rknn"
 # landmark_model = "/path/to/hand_landmarks.rknn"
+
+# YOLO object detection model is auto-resolved from models/ directory.
+# The default local pipeline submits frames at 5fps.
+[yolo]
+fps = 5
+confidence_threshold = 0.25
+nms_threshold = 0.45
+max_detections = 50
 
 # RTSP streaming.
 [rtsp]
 port = 8554
 codec = "h265"
 bitrate = 4000000
+mounts = ["cam2"]
 
 # Microphone input used by the recording session.
 [audio.mic0]
@@ -22,7 +31,7 @@ channels = 2
 
 # 4路 MIPI 摄像头
 [camera.cam0]
-record_device = "/dev/video44"
+record_device = "/dev/video55"
 input_format = "NV12"
 io_mode = "dmabuf"
 record_width = 1920
@@ -33,7 +42,7 @@ fps = 30
 bitrate = 8000000
 
 [camera.cam1]
-record_device = "/dev/video53"
+record_device = "/dev/video64"
 input_format = "NV12"
 io_mode = "dmabuf"
 record_width = 1920
@@ -44,7 +53,7 @@ fps = 30
 bitrate = 8000000
 
 [camera.cam2]
-record_device = "/dev/video62"
+record_device = "/dev/video73"
 input_format = "NV12"
 io_mode = "dmabuf"
 record_width = 1920
@@ -55,7 +64,7 @@ fps = 30
 bitrate = 8000000
 
 [camera.cam3]
-record_device = "/dev/video71"
+record_device = "/dev/video82"
 input_format = "NV12"
 io_mode = "dmabuf"
 record_width = 1920

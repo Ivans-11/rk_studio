@@ -7,8 +7,8 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 
-#include "rk_studio/media_core/media_engine.h"
-#include "rk_studio/ui/ai_canvas_widget.h"
+#include "rk_studio/runtime/runtime_manager.h"
+#include "rk_studio/ui/mediapipe_canvas_widget.h"
 #include "rk_studio/ui/preview_tile_widget.h"
 
 namespace rkstudio::ui {
@@ -25,22 +25,24 @@ class MainWindow : public QMainWindow {
   void TogglePreview();
   void ToggleRecording();
   void ToggleRtsp();
-  void ToggleAi();
+  void ToggleMediapipe();
+  void ToggleYolo();
   void OnStateChanged(rkstudio::AppState state);
   void OnTelemetryObserved(rkstudio::TelemetryEvent event);
   void OnPreviewFailure(QString camera_id, QString reason, bool fatal);
   void OnTileRebound(QString camera_id, WId window_id);
-  void OnAiFrame(QString camera_id, QImage image);
-  void OnAiResult(rkstudio::ai::AiResult result);
+  void OnMediapipeFrame(QString camera_id, QImage image);
+  void OnMediapipeResult(rkstudio::vision::MediapipeResult result);
+  void OnYoloResult(rkstudio::vision::YoloResult result);
 
  private:
   void BuildUi();
   void RebuildTiles();
-  void SwapAiTile(bool enabling);
+  void SwapMediapipeTile(bool enabling);
   void SetStatus(const QString& text);
   void AppendLog(const QString& line);
 
-  media::MediaEngine* media_engine_ = nullptr;
+  runtime::RuntimeManager* runtime_manager_ = nullptr;
   QString board_config_path_;
   QString profile_path_;
 
@@ -51,11 +53,13 @@ class MainWindow : public QMainWindow {
   QPushButton* preview_button_ = nullptr;
   QPushButton* record_button_ = nullptr;
   QPushButton* rtsp_button_ = nullptr;
-  QPushButton* ai_toggle_button_ = nullptr;
+  QPushButton* mediapipe_toggle_button_ = nullptr;
+  QPushButton* yolo_toggle_button_ = nullptr;
   QPlainTextEdit* log_view_ = nullptr;
   std::map<QString, PreviewTileWidget*> tiles_;
-  AiCanvasWidget* ai_canvas_ = nullptr;
+  MediapipeCanvasWidget* mediapipe_canvas_ = nullptr;
   int telemetry_ok_skip_counter_ = 0;
+  int yolo_empty_skip_counter_ = 0;
 };
 
 }  // namespace rkstudio::ui

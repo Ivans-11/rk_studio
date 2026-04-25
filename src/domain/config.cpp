@@ -105,15 +105,18 @@ bool ParseCamera(const std::string& camera_id,
   }
 
   camera->id = camera_id;
-  return AssignValue(table, "record_device", &camera->record_device, "camera." + camera_id, err) &&
-         AssignValue(table, "input_format", &camera->input_format, "camera." + camera_id, err) &&
-         AssignValue(table, "io_mode", &camera->io_mode, "camera." + camera_id, err) &&
-         AssignValue(table, "record_width", &camera->record_width, "camera." + camera_id, err) &&
-         AssignValue(table, "record_height", &camera->record_height, "camera." + camera_id, err) &&
-         AssignValue(table, "preview_width", &camera->preview_width, "camera." + camera_id, err) &&
-         AssignValue(table, "preview_height", &camera->preview_height, "camera." + camera_id, err) &&
-         AssignValue(table, "fps", &camera->fps, "camera." + camera_id, err) &&
-         AssignValue(table, "bitrate", &camera->bitrate, "camera." + camera_id, err);
+  if (!AssignValue(table, "record_device", &camera->record_device, "camera." + camera_id, err) ||
+      !AssignValue(table, "input_format", &camera->input_format, "camera." + camera_id, err) ||
+      !AssignValue(table, "io_mode", &camera->io_mode, "camera." + camera_id, err) ||
+      !AssignValue(table, "record_width", &camera->record_width, "camera." + camera_id, err) ||
+      !AssignValue(table, "record_height", &camera->record_height, "camera." + camera_id, err) ||
+      !AssignValue(table, "preview_width", &camera->preview_width, "camera." + camera_id, err) ||
+      !AssignValue(table, "preview_height", &camera->preview_height, "camera." + camera_id, err) ||
+      !AssignValue(table, "fps", &camera->fps, "camera." + camera_id, err) ||
+      !AssignValue(table, "bitrate", &camera->bitrate, "camera." + camera_id, err)) {
+    return false;
+  }
+  return true;
 }
 
 bool ParseAudio(const std::string& audio_id,
@@ -153,6 +156,22 @@ bool ValidateBoardConfig(const BoardConfig& config, std::string* err) {
       return false;
     }
   }
+  if (config.rtsp.has_value() && config.rtsp->mounts.empty()) {
+    if (err) {
+      *err = "rtsp.mounts must not be empty";
+    }
+    return false;
+  }
+  if (config.yolo.has_value()) {
+    const auto& yolo = *config.yolo;
+    if (yolo.fps <= 0 || yolo.confidence_threshold <= 0.0 ||
+        yolo.nms_threshold <= 0.0 || yolo.max_detections <= 0) {
+      if (err) {
+        *err = "yolo fps/thresholds/max_detections must be > 0";
+      }
+      return false;
+    }
+  }
   return true;
 }
 
@@ -181,16 +200,30 @@ bool ValidateSessionProfile(const SessionProfile& profile, std::string* err) {
     }
     return false;
   }
-  if (!profile.selected_ai_camera.empty()) {
-    const auto& ai_cam = profile.selected_ai_camera;
-    const bool in_preview = std::find(profile.preview_cameras.begin(), profile.preview_cameras.end(), ai_cam) !=
+  if (!profile.selected_mediapipe_camera.empty()) {
+    const auto& mediapipe_cam = profile.selected_mediapipe_camera;
+    const bool in_preview = std::find(profile.preview_cameras.begin(), profile.preview_cameras.end(), mediapipe_cam) !=
                             profile.preview_cameras.end();
     const bool in_record = profile.record_cameras.empty() ||
-                           std::find(profile.record_cameras.begin(), profile.record_cameras.end(), ai_cam) !=
+                           std::find(profile.record_cameras.begin(), profile.record_cameras.end(), mediapipe_cam) !=
                                profile.record_cameras.end();
     if (!in_preview || !in_record) {
       if (err) {
-        *err = "selected_ai_camera '" + ai_cam + "' must be in both preview_cameras and record_cameras";
+        *err = "selected_mediapipe_camera '" + mediapipe_cam + "' must be in both preview_cameras and record_cameras";
+      }
+      return false;
+    }
+  }
+  if (!profile.selected_yolo_camera.empty()) {
+    const auto& yolo_cam = profile.selected_yolo_camera;
+    const bool in_preview = std::find(profile.preview_cameras.begin(), profile.preview_cameras.end(), yolo_cam) !=
+                            profile.preview_cameras.end();
+    const bool in_record = profile.record_cameras.empty() ||
+                           std::find(profile.record_cameras.begin(), profile.record_cameras.end(), yolo_cam) !=
+                               profile.record_cameras.end();
+    if (!in_preview || !in_record) {
+      if (err) {
+        *err = "selected_yolo_camera '" + yolo_cam + "' must be in both preview_cameras and record_cameras";
       }
       return false;
     }
@@ -261,44 +294,76 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
     }
   }
 
-  if (const auto* ai_table = root["ai"].as_table()) {
+  if (const auto* mediapipe_table = root["mediapipe"].as_table()) {
     static const std::unordered_set<std::string> kAllowed{"detector_model", "landmark_model"};
-    if (!RejectUnknownKeys(*ai_table, kAllowed, "ai", err)) {
+    if (!RejectUnknownKeys(*mediapipe_table, kAllowed, "mediapipe", err)) {
       return false;
     }
-    AiHardwareConfig ai;
-    if (!AssignValue(*ai_table, "detector_model", &ai.detector_model, "ai", err) ||
-        !AssignValue(*ai_table, "landmark_model", &ai.landmark_model, "ai", err)) {
+    MediapipeHardwareConfig mediapipe;
+    if (!AssignValue(*mediapipe_table, "detector_model", &mediapipe.detector_model, "mediapipe", err) ||
+        !AssignValue(*mediapipe_table, "landmark_model", &mediapipe.landmark_model, "mediapipe", err)) {
       return false;
     }
-    parsed.ai = ai;
+    parsed.mediapipe = mediapipe;
   }
 
-  // Auto-resolve AI model paths from models/ directory if not explicitly set.
-  if (!parsed.ai.has_value()) {
-    parsed.ai = AiHardwareConfig{};
+  // Auto-resolve Mediapipe model paths from models/ directory if not explicitly set.
+  if (!parsed.mediapipe.has_value()) {
+    parsed.mediapipe = MediapipeHardwareConfig{};
   }
-  auto& ai = *parsed.ai;
-  if (ai.detector_model.empty()) {
-    ai.detector_model = ResolveModelPath(path, "hand_detector.rknn");
+  auto& mediapipe = *parsed.mediapipe;
+  if (mediapipe.detector_model.empty()) {
+    mediapipe.detector_model = ResolveModelPath(path, "hand_detector.rknn");
   }
-  if (ai.landmark_model.empty()) {
-    ai.landmark_model = ResolveModelPath(path, "hand_landmarks.rknn");
+  if (mediapipe.landmark_model.empty()) {
+    mediapipe.landmark_model = ResolveModelPath(path, "hand_landmarks.rknn");
   }
-  // If neither model was found, disable AI.
-  if (ai.detector_model.empty() && ai.landmark_model.empty()) {
-    parsed.ai.reset();
+  // If neither model was found, disable Mediapipe.
+  if (mediapipe.detector_model.empty() && mediapipe.landmark_model.empty()) {
+    parsed.mediapipe.reset();
+  }
+
+  if (const auto* yolo_table = root["yolo"].as_table()) {
+    static const std::unordered_set<std::string> kAllowed{
+        "model", "fps", "confidence_threshold", "nms_threshold", "max_detections"};
+    if (!RejectUnknownKeys(*yolo_table, kAllowed, "yolo", err)) {
+      return false;
+    }
+    YoloHardwareConfig yolo;
+    if (!AssignValue(*yolo_table, "model", &yolo.model, "yolo", err) ||
+        !AssignValue(*yolo_table, "fps", &yolo.fps, "yolo", err) ||
+        !AssignValue(*yolo_table, "confidence_threshold", &yolo.confidence_threshold, "yolo", err) ||
+        !AssignValue(*yolo_table, "nms_threshold", &yolo.nms_threshold, "yolo", err) ||
+        !AssignValue(*yolo_table, "max_detections", &yolo.max_detections, "yolo", err)) {
+      return false;
+    }
+    parsed.yolo = yolo;
+  }
+
+  if (!parsed.yolo.has_value()) {
+    parsed.yolo = YoloHardwareConfig{};
+  }
+  auto& yolo = *parsed.yolo;
+  if (yolo.model.empty()) {
+    yolo.model = ResolveModelPath(path, "yolo11n_rk3588_int8.rknn");
+  }
+  if (yolo.model.empty()) {
+    yolo.model = ResolveModelPath(path, "yolo11n_rk3588_fp.rknn");
+  }
+  if (yolo.model.empty()) {
+    parsed.yolo.reset();
   }
 
   if (const auto* rtsp_table = root["rtsp"].as_table()) {
-    static const std::unordered_set<std::string> kAllowed{"port", "codec", "bitrate"};
+    static const std::unordered_set<std::string> kAllowed{"port", "codec", "bitrate", "mounts"};
     if (!RejectUnknownKeys(*rtsp_table, kAllowed, "rtsp", err)) {
       return false;
     }
     RtspConfig rtsp;
     if (!AssignValue(*rtsp_table, "port", &rtsp.port, "rtsp", err) ||
         !AssignValue(*rtsp_table, "codec", &rtsp.codec, "rtsp", err) ||
-        !AssignValue(*rtsp_table, "bitrate", &rtsp.bitrate, "rtsp", err)) {
+        !AssignValue(*rtsp_table, "bitrate", &rtsp.bitrate, "rtsp", err) ||
+        !AssignStringArray(*rtsp_table, "mounts", &rtsp.mounts, "rtsp", err)) {
       return false;
     }
     parsed.rtsp = rtsp;
@@ -334,14 +399,15 @@ bool LoadSessionProfile(const std::string& path, SessionProfile* profile, std::s
   if (const auto* session = root["session"].as_table()) {
     static const std::unordered_set<std::string> kAllowed{
         "preview_cameras", "record_cameras", "output_dir", "prefix", "audio_source",
-        "selected_ai_camera"};
+        "selected_mediapipe_camera", "selected_yolo_camera"};
     if (!RejectUnknownKeys(*session, kAllowed, "session", err) ||
         !AssignStringArray(*session, "preview_cameras", &parsed.preview_cameras, "session", err) ||
         !AssignStringArray(*session, "record_cameras", &parsed.record_cameras, "session", err) ||
         !AssignValue(*session, "output_dir", &parsed.output_dir, "session", err) ||
         !AssignValue(*session, "prefix", &parsed.prefix, "session", err) ||
         !AssignValue(*session, "audio_source", &parsed.audio_source, "session", err) ||
-        !AssignValue(*session, "selected_ai_camera", &parsed.selected_ai_camera, "session", err)) {
+        !AssignValue(*session, "selected_mediapipe_camera", &parsed.selected_mediapipe_camera, "session", err) ||
+        !AssignValue(*session, "selected_yolo_camera", &parsed.selected_yolo_camera, "session", err)) {
       return false;
     }
   }

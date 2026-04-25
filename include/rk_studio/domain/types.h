@@ -33,22 +33,32 @@ struct CameraNodeSet {
 
 using AudioSource = rkinfra::AudioConfig;
 
-struct AiHardwareConfig {
+struct MediapipeHardwareConfig {
   std::string detector_model;   // resolved at runtime if empty
   std::string landmark_model;   // resolved at runtime if empty
+};
+
+struct YoloHardwareConfig {
+  std::string model;             // resolved at runtime if empty
+  int fps = 5;
+  double confidence_threshold = 0.25;
+  double nms_threshold = 0.45;
+  int max_detections = 50;
 };
 
 struct RtspConfig {
   int port = 8554;
   std::string codec = "h265";
   int bitrate = 4'000'000;
+  std::vector<std::string> mounts{"cam"};
 };
 
 struct BoardConfig {
   std::vector<CameraNodeSet> cameras;
   std::vector<AudioSource> audio_sources;
   std::vector<std::string> sink_priority{"ximagesink", "glimagesink"};
-  std::optional<AiHardwareConfig> ai;
+  std::optional<MediapipeHardwareConfig> mediapipe;
+  std::optional<YoloHardwareConfig> yolo;
   std::optional<RtspConfig> rtsp;
 };
 
@@ -58,7 +68,8 @@ struct SessionProfile {
   std::string output_dir = "./records";
   std::string prefix = "session";
   std::string audio_source = "mic0";
-  std::string selected_ai_camera;
+  std::string selected_mediapipe_camera;
+  std::string selected_yolo_camera;
   int preview_rows = 2;
   int preview_cols = 2;
   int gop = 30;

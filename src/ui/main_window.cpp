@@ -10,6 +10,7 @@
 #include <QHBoxLayout>
 #include <QLayoutItem>
 #include <QMessageBox>
+#include <QStringList>
 #include <QVBoxLayout>
 
 #include "rk_studio/domain/config.h"
@@ -53,16 +54,17 @@ void ClearLayoutWidgets(QWidget* container) {
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-  media_engine_ = new media::MediaEngine(this);
+  runtime_manager_ = new runtime::RuntimeManager(this);
 
   BuildUi();
   board_config_path_ = ResolveDefaultConfigPath(QStringLiteral("board.toml"));
   profile_path_ = ResolveDefaultConfigPath(QStringLiteral("profile.toml"));
-  connect(media_engine_, &media::MediaEngine::StateChanged, this, &MainWindow::OnStateChanged);
-  connect(media_engine_, &media::MediaEngine::TelemetryObserved, this, &MainWindow::OnTelemetryObserved);
-  connect(media_engine_, &media::MediaEngine::PreviewCameraFailed, this, &MainWindow::OnPreviewFailure);
-  connect(media_engine_, &media::MediaEngine::AiFrameReady, this, &MainWindow::OnAiFrame);
-  connect(media_engine_, &media::MediaEngine::AiResultReady, this, &MainWindow::OnAiResult);
+  connect(runtime_manager_, &runtime::RuntimeManager::StateChanged, this, &MainWindow::OnStateChanged);
+  connect(runtime_manager_, &runtime::RuntimeManager::TelemetryObserved, this, &MainWindow::OnTelemetryObserved);
+  connect(runtime_manager_, &runtime::RuntimeManager::PreviewCameraFailed, this, &MainWindow::OnPreviewFailure);
+  connect(runtime_manager_, &runtime::RuntimeManager::MediapipeFrameReady, this, &MainWindow::OnMediapipeFrame);
+  connect(runtime_manager_, &runtime::RuntimeManager::MediapipeResultReady, this, &MainWindow::OnMediapipeResult);
+  connect(runtime_manager_, &runtime::RuntimeManager::YoloResultReady, this, &MainWindow::OnYoloResult);
 
   if (QFileInfo::exists(board_config_path_) && QFileInfo::exists(profile_path_)) {
     LoadConfigFiles();
@@ -93,10 +95,12 @@ void MainWindow::BuildUi() {
   preview_button_ = new QPushButton(QStringLiteral("启动预览"), side_panel);
   record_button_ = new QPushButton(QStringLiteral("启动录制"), side_panel);
   rtsp_button_ = new QPushButton(QStringLiteral("启动 RTSP"), side_panel);
-  ai_toggle_button_ = new QPushButton(QStringLiteral("启动 Mediapipe"), side_panel);
+  mediapipe_toggle_button_ = new QPushButton(QStringLiteral("启动 Mediapipe"), side_panel);
+  yolo_toggle_button_ = new QPushButton(QStringLiteral("启动 YOLO"), side_panel);
   record_button_->setEnabled(false);
   rtsp_button_->setEnabled(false);
-  ai_toggle_button_->setEnabled(false);
+  mediapipe_toggle_button_->setEnabled(false);
+  yolo_toggle_button_->setEnabled(false);
 
   state_label_ = new QLabel(QStringLiteral("状态: Idle"), side_panel);
   summary_label_ = new QLabel(QStringLiteral("等待配置"), side_panel);
@@ -109,7 +113,8 @@ void MainWindow::BuildUi() {
   side_layout->addWidget(preview_button_);
   side_layout->addWidget(record_button_);
   side_layout->addWidget(rtsp_button_);
-  side_layout->addWidget(ai_toggle_button_);
+  side_layout->addWidget(mediapipe_toggle_button_);
+  side_layout->addWidget(yolo_toggle_button_);
   side_layout->addWidget(state_label_);
   side_layout->addWidget(summary_label_);
   side_layout->addWidget(log_view_, 1);
@@ -122,15 +127,16 @@ void MainWindow::BuildUi() {
   connect(preview_button_, &QPushButton::clicked, this, &MainWindow::TogglePreview);
   connect(record_button_, &QPushButton::clicked, this, &MainWindow::ToggleRecording);
   connect(rtsp_button_, &QPushButton::clicked, this, &MainWindow::ToggleRtsp);
-  connect(ai_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleAi);
+  connect(mediapipe_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleMediapipe);
+  connect(yolo_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleYolo);
 }
 
 void MainWindow::RebuildTiles() {
   ClearLayoutWidgets(grid_container_);
   tiles_.clear();
-  ai_canvas_ = nullptr;
+  mediapipe_canvas_ = nullptr;
 
-  const auto& profile = media_engine_->session_profile();
+  const auto& profile = runtime_manager_->session_profile();
   auto* grid = new QGridLayout(grid_container_);
   grid->setContentsMargins(0, 0, 0, 0);
   grid->setSpacing(12);
@@ -141,21 +147,20 @@ void MainWindow::RebuildTiles() {
     const int row = static_cast<int>(i / cols);
     const int col = static_cast<int>(i % cols);
 
-    if (media_engine_->ai_enabled() &&
-        profile.preview_cameras[i] == profile.selected_ai_camera) {
-      // AI camera: use AiCanvasWidget instead of hardware preview sink
-      auto* canvas = new AiCanvasWidget(grid_container_);
+    if (runtime_manager_->mediapipe_enabled() &&
+        profile.preview_cameras[i] == profile.selected_mediapipe_camera) {
+      auto* canvas = new MediapipeCanvasWidget(grid_container_);
       canvas->setMinimumSize(320, 180);
       grid->addWidget(canvas, row, col);
-      ai_canvas_ = canvas;
-    } else {
-      // Normal camera: hardware preview sink
-      auto* tile = new PreviewTileWidget(camera_id, grid_container_);
-      connect(tile, &PreviewTileWidget::WindowRebound, this, &MainWindow::OnTileRebound);
-      grid->addWidget(tile, row, col);
-      tiles_.insert_or_assign(camera_id, tile);
-      media_engine_->BindPreviewWindow(profile.preview_cameras[i], tile->sink_window_id());
+      mediapipe_canvas_ = canvas;
+      continue;
     }
+
+    auto* tile = new PreviewTileWidget(camera_id, grid_container_);
+    connect(tile, &PreviewTileWidget::WindowRebound, this, &MainWindow::OnTileRebound);
+    grid->addWidget(tile, row, col);
+    tiles_.insert_or_assign(camera_id, tile);
+    runtime_manager_->BindPreviewWindow(profile.preview_cameras[i], tile->sink_window_id());
   }
 }
 
@@ -177,46 +182,46 @@ void MainWindow::LoadConfigFiles() {
     return;
   }
 
-  if (media_engine_->state() != AppState::kIdle) {
-    media_engine_->StopAll();
+  if (runtime_manager_->state() != AppState::kIdle) {
+    runtime_manager_->StopAll();
   }
-  media_engine_->LoadBoardConfig(board_config);
-  media_engine_->ApplySessionProfile(profile);
+  runtime_manager_->LoadBoardConfig(board_config);
+  runtime_manager_->ApplySessionProfile(profile);
   RebuildTiles();
-  OnStateChanged(media_engine_->state());
+  OnStateChanged(runtime_manager_->state());
   SetStatus(QString("已加载 %1 路摄像头").arg(profile.preview_cameras.size()));
 }
 
 void MainWindow::TogglePreview() {
-  if (media_engine_->state() == AppState::kPreviewing) {
-    media_engine_->StopAll();
-  } else if (media_engine_->state() == AppState::kIdle) {
+  if (runtime_manager_->state() == AppState::kPreviewing) {
+    runtime_manager_->StopAll();
+  } else if (runtime_manager_->state() == AppState::kIdle) {
     std::string err;
-    if (!media_engine_->StartPreview(&err)) {
+    if (!runtime_manager_->StartPreview(&err)) {
       QMessageBox::warning(this, QStringLiteral("启动失败"), QString::fromStdString(err));
     }
   }
 }
 
 void MainWindow::ToggleRecording() {
-  if (media_engine_->state() == AppState::kRecording) {
-    media_engine_->StopRecording();
-  } else if (media_engine_->state() == AppState::kPreviewing ||
-             media_engine_->state() == AppState::kIdle) {
+  if (runtime_manager_->state() == AppState::kRecording) {
+    runtime_manager_->StopRecording();
+  } else if (runtime_manager_->state() == AppState::kPreviewing ||
+             runtime_manager_->state() == AppState::kIdle) {
     std::string err;
-    if (!media_engine_->StartRecording(&err)) {
+    if (!runtime_manager_->StartRecording(&err)) {
       QMessageBox::warning(this, QStringLiteral("录制失败"), QString::fromStdString(err));
     }
   }
 }
 
 void MainWindow::ToggleRtsp() {
-  if (media_engine_->state() == AppState::kStreaming) {
-    media_engine_->StopRtsp();
-  } else if (media_engine_->state() == AppState::kPreviewing ||
-             media_engine_->state() == AppState::kIdle) {
+  if (runtime_manager_->state() == AppState::kStreaming) {
+    runtime_manager_->StopRtsp();
+  } else if (runtime_manager_->state() == AppState::kPreviewing ||
+             runtime_manager_->state() == AppState::kIdle) {
     std::string err;
-    if (!media_engine_->StartRtsp(&err)) {
+    if (!runtime_manager_->StartRtsp(&err)) {
       QMessageBox::warning(this, QStringLiteral("RTSP 失败"), QString::fromStdString(err));
     }
   }
@@ -231,7 +236,8 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
     bool record_enabled;
     QString rtsp_text;
     bool rtsp_enabled;
-    bool ai_enabled;
+    bool mediapipe_enabled;
+    bool yolo_enabled;
   };
 
   static const auto kTable = [] {
@@ -241,30 +247,35 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         QStringLiteral("启动预览"), true,
         QStringLiteral("启动录制"), true,
         QStringLiteral("启动 RTSP"), true,
+        false,
         false};
     t[rkstudio::AppState::kPreviewing] = {
         "Previewing",
         QStringLiteral("关闭预览"), true,
         QStringLiteral("启动录制"), true,
         QStringLiteral("启动 RTSP"), true,
+        true,
         true};
     t[rkstudio::AppState::kRecording] = {
         "Recording",
         {}, false,
         QStringLiteral("停止录制"), true,
         {}, false,
-        false};
+        false,
+        true};
     t[rkstudio::AppState::kStreaming] = {
         "Streaming",
         {}, false,
         {}, false,
         QStringLiteral("停止 RTSP"), true,
+        false,
         false};
     t[rkstudio::AppState::kError] = {
         "Error",
         QStringLiteral("启动预览"), true,
         QStringLiteral("启动录制"), false,
         QStringLiteral("启动 RTSP"), false,
+        false,
         false};
     return t;
   }();
@@ -279,7 +290,12 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
   record_button_->setEnabled(row.record_enabled);
   if (!row.rtsp_text.isEmpty()) rtsp_button_->setText(row.rtsp_text);
   rtsp_button_->setEnabled(row.rtsp_enabled);
-  ai_toggle_button_->setEnabled(row.ai_enabled);
+  mediapipe_toggle_button_->setText(runtime_manager_->mediapipe_enabled() ? QStringLiteral("关闭 Mediapipe")
+                                                                       : QStringLiteral("启动 Mediapipe"));
+  yolo_toggle_button_->setText(runtime_manager_->yolo_enabled() ? QStringLiteral("关闭 YOLO")
+                                                             : QStringLiteral("启动 YOLO"));
+  mediapipe_toggle_button_->setEnabled(row.mediapipe_enabled);
+  yolo_toggle_button_->setEnabled(row.yolo_enabled);
   state_label_->setText(QString("状态: %1").arg(row.label));
 }
 
@@ -306,36 +322,58 @@ void MainWindow::OnPreviewFailure(QString camera_id, QString reason, bool fatal)
 }
 
 void MainWindow::OnTileRebound(QString camera_id, WId window_id) {
-  media_engine_->BindPreviewWindow(camera_id.toStdString(), window_id);
+  runtime_manager_->BindPreviewWindow(camera_id.toStdString(), window_id);
 }
 
-void MainWindow::ToggleAi() {
-  const bool enabling = !media_engine_->ai_enabled();
-  ai_toggle_button_->setText(enabling ? QStringLiteral("关闭 Mediapipe") : QStringLiteral("启动 Mediapipe"));
+void MainWindow::ToggleMediapipe() {
+  const bool enabling = !runtime_manager_->mediapipe_enabled();
+  mediapipe_toggle_button_->setText(enabling ? QStringLiteral("关闭 Mediapipe") : QStringLiteral("启动 Mediapipe"));
 
-  if (media_engine_->state() == rkstudio::AppState::kPreviewing) {
-    SwapAiTile(enabling);
+  if (!enabling && runtime_manager_->state() == rkstudio::AppState::kPreviewing) {
+    SwapMediapipeTile(false);
   }
 
   std::string err;
-  if (!media_engine_->ToggleAi(enabling, &err)) {
-    QMessageBox::warning(this, QStringLiteral("AI 切换失败"), QString::fromStdString(err));
+  if (!runtime_manager_->ToggleMediapipe(enabling, &err)) {
+    QMessageBox::warning(this, QStringLiteral("Mediapipe 切换失败"), QString::fromStdString(err));
+    mediapipe_toggle_button_->setText(runtime_manager_->mediapipe_enabled() ? QStringLiteral("关闭 Mediapipe")
+                                                           : QStringLiteral("启动 Mediapipe"));
+    if (!enabling && runtime_manager_->state() == rkstudio::AppState::kPreviewing) {
+      SwapMediapipeTile(true);
+    }
+    return;
+  }
+
+  if (enabling && runtime_manager_->state() == rkstudio::AppState::kPreviewing) {
+    SwapMediapipeTile(true);
   }
 }
 
-void MainWindow::SwapAiTile(bool enabling) {
-  const auto& profile = media_engine_->session_profile();
-  const QString ai_cam = QString::fromStdString(profile.selected_ai_camera);
-  if (ai_cam.isEmpty()) return;
+void MainWindow::ToggleYolo() {
+  const bool enabling = !runtime_manager_->yolo_enabled();
+  yolo_toggle_button_->setText(enabling ? QStringLiteral("关闭 YOLO") : QStringLiteral("启动 YOLO"));
+
+  std::string err;
+  if (!runtime_manager_->ToggleYolo(enabling, &err)) {
+    QMessageBox::warning(this, QStringLiteral("YOLO 切换失败"), QString::fromStdString(err));
+    yolo_toggle_button_->setText(runtime_manager_->yolo_enabled() ? QStringLiteral("关闭 YOLO")
+                                                               : QStringLiteral("启动 YOLO"));
+  }
+}
+
+void MainWindow::SwapMediapipeTile(bool enabling) {
+  const auto& profile = runtime_manager_->session_profile();
+  const QString mediapipe_cam = QString::fromStdString(profile.selected_mediapipe_camera);
+  if (mediapipe_cam.isEmpty()) return;
 
   QGridLayout* grid = qobject_cast<QGridLayout*>(grid_container_->layout());
   if (!grid) return;
 
-  // Find the AI camera's position in the grid.
   const int cols = std::max(1, profile.preview_cols);
-  int target_row = -1, target_col = -1;
+  int target_row = -1;
+  int target_col = -1;
   for (size_t i = 0; i < profile.preview_cameras.size(); ++i) {
-    if (profile.preview_cameras[i] == profile.selected_ai_camera) {
+    if (profile.preview_cameras[i] == profile.selected_mediapipe_camera) {
       target_row = static_cast<int>(i / cols);
       target_col = static_cast<int>(i % cols);
       break;
@@ -343,7 +381,6 @@ void MainWindow::SwapAiTile(bool enabling) {
   }
   if (target_row < 0) return;
 
-  // Remove old widget from that cell.
   if (QLayoutItem* item = grid->itemAtPosition(target_row, target_col)) {
     if (QWidget* old_widget = item->widget()) {
       grid->removeWidget(old_widget);
@@ -352,35 +389,69 @@ void MainWindow::SwapAiTile(bool enabling) {
     }
   }
 
-  // Remove from tile map if present.
-  tiles_.erase(ai_cam);
-  ai_canvas_ = nullptr;
+  tiles_.erase(mediapipe_cam);
+  mediapipe_canvas_ = nullptr;
 
   if (enabling) {
-    auto* canvas = new AiCanvasWidget(grid_container_);
+    auto* canvas = new MediapipeCanvasWidget(grid_container_);
     canvas->setMinimumSize(320, 180);
     grid->addWidget(canvas, target_row, target_col);
-    ai_canvas_ = canvas;
+    mediapipe_canvas_ = canvas;
   } else {
-    auto* tile = new PreviewTileWidget(ai_cam, grid_container_);
+    auto* tile = new PreviewTileWidget(mediapipe_cam, grid_container_);
     connect(tile, &PreviewTileWidget::WindowRebound, this, &MainWindow::OnTileRebound);
     grid->addWidget(tile, target_row, target_col);
-    tiles_.insert_or_assign(ai_cam, tile);
-    media_engine_->BindPreviewWindow(profile.selected_ai_camera, tile->sink_window_id());
+    tiles_.insert_or_assign(mediapipe_cam, tile);
+    runtime_manager_->BindPreviewWindow(profile.selected_mediapipe_camera, tile->sink_window_id());
   }
 }
 
-void MainWindow::OnAiFrame(QString camera_id, QImage image) {
+void MainWindow::OnMediapipeFrame(QString camera_id, QImage image) {
   (void)camera_id;
-  if (ai_canvas_) {
-    ai_canvas_->SetFrame(image);
+  if (mediapipe_canvas_) {
+    mediapipe_canvas_->SetFrame(image);
   }
 }
 
-void MainWindow::OnAiResult(rkstudio::ai::AiResult result) {
-  if (ai_canvas_) {
-    ai_canvas_->SetResult(result);
+void MainWindow::OnMediapipeResult(rkstudio::vision::MediapipeResult result) {
+  if (mediapipe_canvas_) {
+    mediapipe_canvas_->SetResult(result);
   }
+}
+
+void MainWindow::OnYoloResult(rkstudio::vision::YoloResult result) {
+  if (!result.ok) {
+    AppendLog(QString("[yolo] %1 error: %2")
+                  .arg(QString::fromStdString(result.camera_id))
+                  .arg(QString::fromStdString(result.error)));
+    return;
+  }
+  if (result.detections.empty()) {
+    if (++yolo_empty_skip_counter_ % 10 == 0) {
+      AppendLog(QString("[yolo] %1 no objects, infer %.1f fps")
+                    .arg(QString::fromStdString(result.camera_id))
+                    .arg(result.fps));
+    }
+    return;
+  }
+
+  QStringList top;
+  const int limit = std::min<int>(3, result.detections.size());
+  for (int i = 0; i < limit; ++i) {
+    const auto& det = result.detections[static_cast<size_t>(i)];
+    top << QString("#%1 %.2f [%2,%3,%4,%5]")
+               .arg(det.class_id)
+               .arg(det.score)
+               .arg(det.box.x1)
+               .arg(det.box.y1)
+               .arg(det.box.x2)
+               .arg(det.box.y2);
+  }
+  AppendLog(QString("[yolo] %1 %2 objects, infer %.1f fps: %3")
+                .arg(QString::fromStdString(result.camera_id))
+                .arg(result.detections.size())
+                .arg(result.fps)
+                .arg(top.join(QStringLiteral("; "))));
 }
 
 }  // namespace rkstudio::ui

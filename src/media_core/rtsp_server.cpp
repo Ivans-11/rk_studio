@@ -7,6 +7,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h>
@@ -30,6 +31,10 @@ int IoModeInt(const std::string& io_mode) {
 bool IsJpegFormat(const std::string& fmt) {
   const std::string upper = Uppercase(fmt);
   return upper == "MJPG" || upper == "JPEG";
+}
+
+int AlignUp(int value, int alignment) {
+  return ((value + alignment - 1) / alignment) * alignment;
 }
 
 void AppendEncoderTail(std::ostringstream& ss, const std::string& codec, int gop, int bitrate) {
@@ -94,6 +99,53 @@ std::string BuildMosaicLaunchString(const std::vector<const CameraNodeSet*>& cam
   return ss.str();
 }
 
+std::string BuildCameraLaunchString(const CameraNodeSet& cam,
+                                    const std::string& codec, int gop, int bitrate) {
+  const int io = IoModeInt(cam.io_mode);
+  const bool h265 = Uppercase(codec) == "H265";
+  const int out_w = h265 ? AlignUp(cam.preview_width, 16) : cam.preview_width;
+  const int out_h = h265 ? AlignUp(cam.preview_height, 16) : cam.preview_height;
+
+  std::ostringstream ss;
+  ss << "( v4l2src device=" << cam.record_device << " io-mode=" << io << " do-timestamp=true ";
+
+  if (IsJpegFormat(cam.input_format)) {
+    ss << "! image/jpeg,width=" << out_w << ",height=" << out_h
+       << ",framerate=" << cam.fps << "/1 "
+       << "! jpegdec ! videoconvert ! video/x-raw,format=NV12,width="
+       << out_w << ",height=" << out_h << " ";
+  } else {
+    ss << "! video/x-raw,format=NV12,width=" << out_w << ",height=" << out_h
+       << ",framerate=" << cam.fps << "/1 ";
+  }
+
+  ss << "! videoconvert ! video/x-raw,format=NV12 ";
+  AppendEncoderTail(ss, codec, gop, bitrate);
+  ss << ")";
+  return ss.str();
+}
+
+void AddRtspFactory(GstRTSPMountPoints* mounts,
+                    const std::string& path,
+                    const std::string& launch,
+                    int port) {
+  GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();
+  gst_rtsp_media_factory_set_launch(factory, launch.c_str());
+  gst_rtsp_media_factory_set_shared(factory, TRUE);
+  gst_rtsp_media_factory_set_latency(factory, 0);
+  gst_rtsp_mount_points_add_factory(mounts, path.c_str(), factory);
+
+  std::cerr << "rtsp mount: rtsp://0.0.0.0:" << port << path << "\n";
+  std::cerr << "  pipeline: " << launch << "\n";
+}
+
+std::string NormalizeMount(std::string mount) {
+  while (!mount.empty() && mount.front() == '/') {
+    mount.erase(mount.begin());
+  }
+  return mount;
+}
+
 }  // namespace
 
 RtspServer::~RtspServer() { Stop(); }
@@ -137,17 +189,39 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
   // Use RTSP-specific bitrate if configured, otherwise fall back to sum.
   const int stream_bitrate = rtsp.bitrate > 0 ? rtsp.bitrate : total_bitrate;
 
-  const std::string launch = BuildMosaicLaunchString(cams, codec, gop, stream_bitrate);
-  const std::string path = "/cam";
+  std::unordered_set<std::string> added_mounts;
+  for (const auto& configured_mount : rtsp.mounts) {
+    const std::string mount = NormalizeMount(configured_mount);
+    if (mount.empty()) {
+      if (err) *err = "empty RTSP mount in rtsp.mounts";
+      g_object_unref(mounts);
+      g_object_unref(server_);
+      server_ = nullptr;
+      return false;
+    }
+    if (!added_mounts.insert(mount).second) {
+      continue;
+    }
 
-  GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();
-  gst_rtsp_media_factory_set_launch(factory, launch.c_str());
-  gst_rtsp_media_factory_set_shared(factory, TRUE);
-  gst_rtsp_media_factory_set_latency(factory, 0);
-  gst_rtsp_mount_points_add_factory(mounts, path.c_str(), factory);
+    if (mount == "cam") {
+      const std::string launch = BuildMosaicLaunchString(cams, codec, gop, stream_bitrate);
+      AddRtspFactory(mounts, "/cam", launch, rtsp.port);
+      continue;
+    }
 
-  std::cerr << "rtsp mount: rtsp://0.0.0.0:" << rtsp.port << path << "\n";
-  std::cerr << "  pipeline: " << launch << "\n";
+    const CameraNodeSet* cam = FindCamera(board, mount);
+    if (cam == nullptr) {
+      if (err) *err = "unknown RTSP mount '" + configured_mount + "': expected 'cam' or a camera id";
+      g_object_unref(mounts);
+      g_object_unref(server_);
+      server_ = nullptr;
+      return false;
+    }
+
+    const int camera_bitrate = rtsp.bitrate > 0 ? rtsp.bitrate : cam->bitrate;
+    const std::string camera_launch = BuildCameraLaunchString(*cam, codec, gop, camera_bitrate);
+    AddRtspFactory(mounts, "/" + mount, camera_launch, rtsp.port);
+  }
 
   g_object_unref(mounts);
 

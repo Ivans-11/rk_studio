@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace rkstudio::ui {
@@ -40,13 +41,25 @@ WId PreviewTileWidget::sink_window_id() {
   return sink_host_->winId();
 }
 
+void PreviewTileWidget::RebindSinkWindow() {
+  const WId window_id = sink_host_->winId();
+  QTimer::singleShot(0, this, [this, window_id] {
+    if (sink_host_ != nullptr && sink_host_->winId() == window_id) {
+      emit WindowRebound(camera_id_, window_id);
+    }
+  });
+}
+
 void PreviewTileWidget::SetStatusText(const QString& text) {
   status_->setText(text);
 }
 
 bool PreviewTileWidget::eventFilter(QObject* watched, QEvent* event) {
-  if (watched == sink_host_ && event->type() == QEvent::WinIdChange) {
-    emit WindowRebound(camera_id_, sink_host_->winId());
+  if (watched == sink_host_ &&
+      (event->type() == QEvent::WinIdChange ||
+       event->type() == QEvent::Resize ||
+       event->type() == QEvent::Show)) {
+    RebindSinkWindow();
     return false;
   }
   return QWidget::eventFilter(watched, event);

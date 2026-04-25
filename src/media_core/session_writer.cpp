@@ -133,24 +133,24 @@ bool SessionWriter::RecordSyncEvent(const TelemetryEvent& event) {
   return false;
 }
 
-bool SessionWriter::OpenAiWriter(std::string* err) {
+bool SessionWriter::OpenMediapipeWriter(std::string* err) {
   if (!session_paths_) {
     if (err) *err = "session not initialized";
     return false;
   }
-  ai_writer_ = std::make_unique<JsonlFileWriter>();
-  std::string ai_err;
-  if (!ai_writer_->Open(session_paths_->session_dir / "ai.hand.jsonl", &ai_err)) {
-    std::cerr << "[ai] failed to open ai.hand.jsonl: " << ai_err << "\n";
-    ai_writer_.reset();
+  mediapipe_writer_ = std::make_unique<JsonlFileWriter>();
+  std::string mediapipe_err;
+  if (!mediapipe_writer_->Open(session_paths_->session_dir / "mediapipe.hand.jsonl", &mediapipe_err)) {
+    std::cerr << "[mediapipe] failed to open mediapipe.hand.jsonl: " << mediapipe_err << "\n";
+    mediapipe_writer_.reset();
     return false;
   }
   return true;
 }
 
-void SessionWriter::WriteAiLine(const std::string& line) {
-  if (ai_writer_) {
-    ai_writer_->WriteLine(line);
+void SessionWriter::WriteMediapipeLine(const std::string& line) {
+  if (mediapipe_writer_) {
+    mediapipe_writer_->WriteLine(line);
   }
 }
 
@@ -172,7 +172,7 @@ void SessionWriter::Finalize(bool ok, const std::vector<rkinfra::OutputStreamInf
   }
 
   telemetry_sink_.reset();
-  ai_writer_.reset();
+  mediapipe_writer_.reset();
   compat_config_.reset();
   session_paths_.reset();
   session_artifacts_.reset();

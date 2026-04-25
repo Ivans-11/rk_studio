@@ -41,14 +41,17 @@ set(RK_STUDIO_SOURCES
   src/domain/types.cpp
   src/domain/config.cpp
   src/domain/session.cpp
-  src/media_core/camera_pipeline.cpp
+  src/runtime/runtime_manager.cpp
+  src/media_core/v4l2_pipeline.cpp
   src/media_core/media_engine.cpp
+  src/media_core/vision_engine.cpp
   src/media_core/session_writer.cpp
   src/media_core/rtsp_server.cpp
   src/ui/preview_tile_widget.cpp
-  src/ui/ai_canvas_widget.cpp
+  src/ui/mediapipe_canvas_widget.cpp
   src/ui/main_window.cpp
-  src/ai_core/hand_ai_processor.cpp
+  src/vision_core/mediapipe_processor.cpp
+  src/vision_core/yolo_processor.cpp
 )
 
 set(RK_STUDIO_MEDIAPIPE_SOURCES
@@ -66,13 +69,15 @@ set(RK_STUDIO_HEADERS
   include/rk_studio/domain/types.h
   include/rk_studio/domain/config.h
   include/rk_studio/domain/session.h
-  include/rk_studio/ai_core/ai_types.h
-  include/rk_studio/ai_core/ai_processor.h
-  include/rk_studio/media_core/camera_pipeline.h
+  include/rk_studio/runtime/runtime_manager.h
+  include/rk_studio/vision_core/vision_types.h
+  include/rk_studio/vision_core/vision_processor.h
+  include/rk_studio/media_core/v4l2_pipeline.h
   include/rk_studio/media_core/media_engine.h
+  include/rk_studio/media_core/vision_engine.h
   include/rk_studio/media_core/session_writer.h
   include/rk_studio/ui/preview_tile_widget.h
-  include/rk_studio/ui/ai_canvas_widget.h
+  include/rk_studio/ui/mediapipe_canvas_widget.h
   include/rk_studio/ui/main_window.h
   include/rk_studio/infra/runtime.h
   include/rk_studio/infra/gst_util.h

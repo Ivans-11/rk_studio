@@ -25,6 +25,8 @@ class PreviewTileWidget : public QWidget {
   bool eventFilter(QObject* watched, QEvent* event) override;
 
  private:
+  void RebindSinkWindow();
+
   QString camera_id_;
   QLabel* title_ = nullptr;
   QLabel* status_ = nullptr;
