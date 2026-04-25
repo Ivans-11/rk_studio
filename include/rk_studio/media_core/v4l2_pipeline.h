@@ -106,6 +106,8 @@ class V4l2Pipeline {
   GstElement* jpeg_decoder_ = nullptr;
   GstElement* normalize_convert_ = nullptr;
   GstElement* normalize_caps_ = nullptr;
+  GstElement* rate_filter_ = nullptr;
+  GstElement* rate_caps_ = nullptr;
 
   GstElement* preview_convert_ = nullptr;
   GstElement* preview_sink_ = nullptr;

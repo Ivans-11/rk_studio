@@ -20,8 +20,8 @@
 namespace rkstudio::media {
 namespace {
 
-constexpr uint64_t kMediapipeSubmitIntervalNs = 1'000'000'000ULL / 15ULL;
-constexpr uint64_t kDefaultYoloSubmitIntervalNs = 1'000'000'000ULL / 5ULL;
+constexpr int kMediapipeFps = 15;
+constexpr int kDefaultYoloFps = 5;
 
 std::string DeriveSelfpathDevice(const std::string& mainpath_device, std::string* err) {
   const std::string prefix = "/dev/video";
@@ -38,32 +38,6 @@ std::string DeriveSelfpathDevice(const std::string& mainpath_device, std::string
   }
 
   return prefix + std::to_string(std::stoi(number) + 1);
-}
-
-bool ShouldSubmitSample(
-    GstSample* sample,
-    uint64_t submit_interval_ns,
-    std::atomic<uint64_t>* last_submit_ns) {
-  if (sample == nullptr || last_submit_ns == nullptr) {
-    return false;
-  }
-
-  GstBuffer* buffer = gst_sample_get_buffer(sample);
-  if (!buffer) {
-    return false;
-  }
-
-  const uint64_t pts_ns = GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer))
-                              ? GST_BUFFER_PTS(buffer) : 0;
-  const uint64_t throttle_ns = pts_ns != 0 ? pts_ns : rkinfra::ClockMonotonicNs();
-  const uint64_t previous_submit_ns = last_submit_ns->load();
-  if (previous_submit_ns != 0 &&
-      throttle_ns > previous_submit_ns &&
-      throttle_ns - previous_submit_ns < submit_interval_ns) {
-    return false;
-  }
-  last_submit_ns->store(throttle_ns);
-  return true;
 }
 
 std::string MediapipeResultToJson(const rkstudio::vision::MediapipeResult& r) {
@@ -179,7 +153,7 @@ bool VisionEngine::ToggleMediapipe(bool enable, std::string* err) {
         return false;
       }
     }
-    if (state_ == AppState::kPreviewing || state_ == AppState::kRecording) {
+    if (state_ == AppState::kIdle || state_ == AppState::kPreviewing || state_ == AppState::kRecording) {
       if (!StartMediapipePipeline(err)) {
         mediapipe_enabled_ = false;
         StopMediapipeProcessor();
@@ -220,15 +194,24 @@ bool VisionEngine::ToggleYolo(bool enable, std::string* err) {
 
   yolo_enabled_ = enable;
   if (enable) {
+    if (state_ == AppState::kPreviewing && preview_controls_.stop_preview_pipeline) {
+      preview_controls_.stop_preview_pipeline(yolo_cam_id);
+    }
     if (!yolo_processor_ && !StartYoloProcessor()) {
       yolo_enabled_ = false;
+      if (state_ == AppState::kPreviewing && preview_controls_.restore_preview_pipeline) {
+        preview_controls_.restore_preview_pipeline(yolo_cam_id, err);
+      }
       if (err) *err = "failed to start YOLO processor";
       return false;
     }
-    if (state_ == AppState::kPreviewing || state_ == AppState::kRecording) {
+    if (state_ == AppState::kIdle || state_ == AppState::kPreviewing || state_ == AppState::kRecording) {
       if (!StartYoloPipeline(err)) {
         yolo_enabled_ = false;
         StopYoloProcessor();
+        if (state_ == AppState::kPreviewing && preview_controls_.restore_preview_pipeline) {
+          preview_controls_.restore_preview_pipeline(yolo_cam_id, err);
+        }
         return false;
       }
     }
@@ -239,27 +222,42 @@ bool VisionEngine::ToggleYolo(bool enable, std::string* err) {
     yolo_poll_timer_->stop();
     StopYoloPipeline();
     StopYoloProcessor();
+    if (state_ == AppState::kPreviewing && preview_controls_.restore_preview_pipeline) {
+      if (!preview_controls_.restore_preview_pipeline(yolo_cam_id, err)) {
+        return false;
+      }
+    }
   }
   return true;
 }
 
-bool VisionEngine::StartActivePipelines(AppState state, std::string* err) {
+bool VisionEngine::SyncForState(AppState state, std::string* err) {
   state_ = state;
 
   if (mediapipe_processor_ && session_writer_ && session_writer_->session_paths()) {
     session_writer_->OpenMediapipeWriter(nullptr);
   }
   if (mediapipe_processor_) {
-    if (!StartMediapipePipeline(err)) {
-      StopPipelines();
-      return false;
+    if (state_ == AppState::kPreviewing && preview_controls_.stop_preview_pipeline) {
+      preview_controls_.stop_preview_pipeline(mediapipe_camera_id_);
+    }
+    if (!mediapipe_pipeline_) {
+      if (!StartMediapipePipeline(err)) {
+        StopPipelines();
+        return false;
+      }
     }
     mediapipe_poll_timer_->start();
   }
   if (yolo_processor_) {
-    if (!StartYoloPipeline(err)) {
-      StopPipelines();
-      return false;
+    if (state_ == AppState::kPreviewing && preview_controls_.stop_preview_pipeline) {
+      preview_controls_.stop_preview_pipeline(yolo_camera_id_);
+    }
+    if (!yolo_pipeline_) {
+      if (!StartYoloPipeline(err)) {
+        StopPipelines();
+        return false;
+      }
     }
     yolo_poll_timer_->start();
   }
@@ -287,13 +285,14 @@ std::unique_ptr<V4l2Pipeline> VisionEngine::BuildMediapipePipeline(std::string* 
     return nullptr;
   }
   return BuildVisionPipeline(
-      mediapipe_camera_id_, "_mediapipe",
+      mediapipe_camera_id_, "_mediapipe", kMediapipeFps,
       [this](GstSample* sample) { OnMediapipeSample(sample); }, err);
 }
 
 std::unique_ptr<V4l2Pipeline> VisionEngine::BuildVisionPipeline(
     const std::string& camera_id,
     const std::string& suffix,
+    int fps,
     std::function<void(GstSample*)> sample_callback,
     std::string* err) {
   const CameraNodeSet* camera = FindCamera(board_config_, camera_id);
@@ -315,7 +314,7 @@ std::unique_ptr<V4l2Pipeline> VisionEngine::BuildVisionPipeline(
   options.source.io_mode = camera->io_mode;
   options.source.width = camera->preview_width;
   options.source.height = camera->preview_height;
-  options.source.fps = camera->fps;
+  options.source.fps = fps;
   options.source.bitrate = camera->bitrate;
   options.record.session_dir = (session_writer_ && session_writer_->session_paths())
       ? session_writer_->session_paths()->session_dir
@@ -347,7 +346,6 @@ std::unique_ptr<V4l2Pipeline> VisionEngine::BuildVisionPipeline(
 
 bool VisionEngine::StartMediapipePipeline(std::string* err) {
   StopMediapipePipeline();
-  last_mediapipe_submit_ns_.store(0);
   auto pipeline = BuildMediapipePipeline(err);
   if (!pipeline || !pipeline->Start(err)) {
     StopMediapipePipeline();
@@ -396,7 +394,6 @@ bool VisionEngine::StartMediapipeProcessor() {
 void VisionEngine::StopMediapipeProcessor() {
   mediapipe_poll_timer_->stop();
   StopMediapipePipeline();
-  last_mediapipe_submit_ns_.store(0);
   mediapipe_logged_path_ = false;
   if (mediapipe_processor_) {
     mediapipe_processor_->Stop();
@@ -419,18 +416,13 @@ void VisionEngine::OnMediapipeSample(GstSample* sample) {
     std::lock_guard<std::mutex> lock(mediapipe_frame_mu_);
     camera_id = mediapipe_camera_id_;
   }
-  if (!ShouldSubmitSample(sample, kMediapipeSubmitIntervalNs, &last_mediapipe_submit_ns_)) {
-    return;
-  }
-
-  auto frame = frame_converter_.ConvertNv12SampleToRgbFrame(sample, camera_id);
+  auto frame = frame_converter_.ConvertToRgbFrame(sample, camera_id);
   if (!frame.has_value()) {
     return;
   }
 
   if (!mediapipe_logged_path_) {
-    std::cerr << "[mediapipe] NV12->RGB path: "
-              << (frame->used_rga ? "RGA hardware" : "CPU fallback") << "\n";
+    std::cerr << "[mediapipe] NV12->RGB path: RGA hardware\n";
     mediapipe_logged_path_ = true;
   }
 
@@ -500,14 +492,17 @@ bool VisionEngine::StartYoloProcessor() {
 void VisionEngine::StopYoloProcessor() {
   yolo_poll_timer_->stop();
   StopYoloPipeline();
-  last_yolo_submit_ns_.store(0);
   yolo_logged_path_ = false;
   if (yolo_processor_) {
     yolo_processor_->Stop();
     yolo_processor_.reset();
     std::cerr << "[yolo] processor stopped\n";
   }
-  yolo_camera_id_.clear();
+  {
+    std::lock_guard<std::mutex> lock(yolo_frame_mu_);
+    yolo_camera_id_.clear();
+    latest_yolo_frame_ = {};
+  }
 }
 
 std::unique_ptr<V4l2Pipeline> VisionEngine::BuildYoloPipeline(std::string* err) {
@@ -521,12 +516,14 @@ std::unique_ptr<V4l2Pipeline> VisionEngine::BuildYoloPipeline(std::string* err) 
   }
   return BuildVisionPipeline(
       yolo_camera_id_, "_yolo",
+      board_config_.yolo.has_value() && board_config_.yolo->fps > 0
+          ? board_config_.yolo->fps
+          : kDefaultYoloFps,
       [this](GstSample* sample) { OnYoloSample(sample); }, err);
 }
 
 bool VisionEngine::StartYoloPipeline(std::string* err) {
   StopYoloPipeline();
-  last_yolo_submit_ns_.store(0);
   auto pipeline = BuildYoloPipeline(err);
   if (!pipeline || !pipeline->Start(err)) {
     StopYoloPipeline();
@@ -550,26 +547,37 @@ void VisionEngine::OnYoloSample(GstSample* sample) {
     return;
   }
 
-  const std::string camera_id = yolo_camera_id_;
-  const uint64_t interval_ns = board_config_.yolo.has_value() && board_config_.yolo->fps > 0
-                                   ? 1'000'000'000ULL / static_cast<uint64_t>(board_config_.yolo->fps)
-                                   : kDefaultYoloSubmitIntervalNs;
-  if (!ShouldSubmitSample(sample, interval_ns, &last_yolo_submit_ns_)) {
+  std::string camera_id;
+  {
+    std::lock_guard<std::mutex> lock(yolo_frame_mu_);
+    camera_id = yolo_camera_id_;
+  }
+  auto raw_frame = frame_converter_.ExtractNv12Frame(sample, camera_id);
+  auto frame = frame_converter_.ConvertToRgbFrame(sample, camera_id);
+  if (!raw_frame.has_value() && !frame.has_value()) {
     return;
   }
 
-  auto frame = frame_converter_.ConvertNv12SampleToRgbFrame(sample, camera_id);
-  if (!frame.has_value()) {
-    return;
-  }
-
-  if (!yolo_logged_path_) {
-    std::cerr << "[yolo] NV12->RGB path: "
-              << (frame->used_rga ? "RGA hardware" : "CPU fallback") << "\n";
+  if (frame.has_value() && !yolo_logged_path_) {
+    std::cerr << "[yolo] NV12->RGB path: RGA hardware\n";
     yolo_logged_path_ = true;
   }
 
-  yolo_processor_->Submit(frame->frame);
+  if (frame.has_value()) {
+    QImage image(frame->rgb_holder->data, frame->frame.width, frame->frame.height,
+                 frame->frame.stride,
+                 QImage::Format_RGB888);
+    {
+      std::lock_guard<std::mutex> lock(yolo_frame_mu_);
+      latest_yolo_frame_ = image.copy();
+    }
+  }
+
+  if (raw_frame.has_value()) {
+    yolo_processor_->Submit(*raw_frame);
+  } else if (frame.has_value()) {
+    yolo_processor_->Submit(frame->frame);
+  }
 }
 
 void VisionEngine::PollYoloResults() {
@@ -577,6 +585,15 @@ void VisionEngine::PollYoloResults() {
     return;
   }
   while (auto result = yolo_processor_->PollResult()) {
+    const auto now = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(yolo_frame_mu_);
+      if (!latest_yolo_frame_.isNull() &&
+          now - last_yolo_frame_emit_ >= std::chrono::milliseconds(50)) {
+        last_yolo_frame_emit_ = now;
+        emit YoloFrameReady(QString::fromStdString(yolo_camera_id_), latest_yolo_frame_);
+      }
+    }
     emit YoloResultReady(*result);
   }
 }

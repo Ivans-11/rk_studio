@@ -1,14 +1,30 @@
 #include "rk_studio/domain/session.h"
 
+#include <chrono>
+#include <ctime>
 #include <exception>
-
-#include "rk_studio/infra/runtime.h"
+#include <iomanip>
+#include <sstream>
 
 namespace rkstudio {
+namespace {
+
+std::string NowLocalCompact() {
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+  std::tm tm{};
+  localtime_r(&now_time, &tm);
+
+  std::ostringstream out;
+  out << std::put_time(&tm, "%Y%m%d-%H%M%S");
+  return out.str();
+}
+
+}  // namespace
 
 SessionArtifacts CreateSessionArtifacts(const std::string& output_dir, const std::string& prefix) {
   SessionArtifacts artifacts;
-  artifacts.session_id = prefix + "-" + rkinfra::NowLocalCompact();
+  artifacts.session_id = prefix + "-" + NowLocalCompact();
   artifacts.session_dir = fs::path(output_dir) / artifacts.session_id;
   artifacts.studio_event_path = artifacts.session_dir / "studio.events.jsonl";
   return artifacts;

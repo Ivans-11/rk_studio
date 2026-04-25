@@ -1,44 +1,74 @@
 #include "rk_studio/ui/mediapipe_canvas_widget.h"
 
+#include <utility>
+
+#include <QEvent>
 #include <QPainter>
+#include <QVBoxLayout>
 
 namespace rkstudio::ui {
 
-MediapipeCanvasWidget::MediapipeCanvasWidget(QWidget* parent) : QWidget(parent) {
-  setMinimumSize(320, 180);
-  setAutoFillBackground(true);
+MediapipeCanvasWidget::MediapipeCanvasWidget(QWidget* parent)
+    : MediapipeCanvasWidget(QStringLiteral("Mediapipe"), parent) {}
+
+MediapipeCanvasWidget::MediapipeCanvasWidget(QString camera_id, QWidget* parent)
+    : QWidget(parent) {
+  setStyleSheet("MediapipeCanvasWidget { background: #1c1c1c; border: 2px solid #3b3b3b; border-radius: 10px; }");
+
+  auto* layout = new QVBoxLayout(this);
+  layout->setContentsMargins(8, 8, 8, 8);
+  layout->setSpacing(6);
+
+  title_ = new QLabel(std::move(camera_id), this);
+  title_->setStyleSheet("font-weight: 600; color: #f3f3f3;");
+  status_ = new QLabel(QStringLiteral("Mediapipe"), this);
+  status_->setStyleSheet("color: #bdbdbd;");
+
+  canvas_ = new QFrame(this);
+  canvas_->setFrameShape(QFrame::StyledPanel);
+  canvas_->setStyleSheet("background: #000;");
+  canvas_->setMinimumSize(320, 180);
+  canvas_->installEventFilter(this);
+
+  layout->addWidget(title_);
+  layout->addWidget(canvas_, 1);
+  layout->addWidget(status_);
 }
 
 void MediapipeCanvasWidget::SetFrame(const QImage& image) {
   frame_ = image;
-  update();
+  canvas_->update();
 }
 
 void MediapipeCanvasWidget::SetResult(const vision::MediapipeResult& result) {
   result_ = result;
-  update();
+  canvas_->update();
 }
 
 void MediapipeCanvasWidget::Clear() {
   frame_ = {};
   result_.reset();
-  update();
+  canvas_->update();
 }
 
-void MediapipeCanvasWidget::paintEvent(QPaintEvent* event) {
-  QWidget::paintEvent(event);
+bool MediapipeCanvasWidget::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == canvas_ && event->type() == QEvent::Paint) {
+    QPainter painter(canvas_);
+    DrawCanvas(painter, canvas_->rect());
+    return true;
+  }
+  return QWidget::eventFilter(watched, event);
+}
 
-  QPainter painter(this);
-  painter.fillRect(rect(), QColor(20, 20, 20));
+void MediapipeCanvasWidget::DrawCanvas(QPainter& painter, const QRect& rect) {
+  painter.fillRect(rect, Qt::black);
   if (frame_.isNull()) {
     painter.setPen(Qt::white);
-    painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("Mediapipe 预览未就绪"));
+    painter.drawText(rect, Qt::AlignCenter, QStringLiteral("Mediapipe 预览未就绪"));
     return;
   }
 
-  const QSize scaled = frame_.size().scaled(size(), Qt::KeepAspectRatio);
-  const QRect target((width() - scaled.width()) / 2, (height() - scaled.height()) / 2,
-                     scaled.width(), scaled.height());
+  const QRect target = rect;
   painter.drawImage(target, frame_);
 
   if (!result_.has_value()) {
@@ -74,12 +104,6 @@ void MediapipeCanvasWidget::paintEvent(QPaintEvent* event) {
       painter.drawEllipse(map_point(point.x, point.y), 3.0, 3.0);
     }
   }
-
-  painter.setPen(Qt::white);
-  painter.drawText(rect().adjusted(8, 8, -8, -8), Qt::AlignTop | Qt::AlignLeft,
-                   QString("FPS:%1  Hands:%2")
-                       .arg(result_->fps, 0, 'f', 1)
-                       .arg(result_->hands.size()));
 }
 
 }  // namespace rkstudio::ui

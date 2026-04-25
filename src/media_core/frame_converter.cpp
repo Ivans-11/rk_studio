@@ -6,7 +6,8 @@
 #include <gst/allocators/gstdmabuf.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
-#include <opencv2/imgproc.hpp>
+#include <linux/videodev2.h>
+#include <opencv2/core.hpp>
 
 #include "mediapipe/preprocess/hw_preprocess.h"
 
@@ -21,9 +22,72 @@ int ExtractDmabufFd(GstBuffer* buffer) {
   return -1;
 }
 
+uint32_t VideoFormatToFourcc(GstVideoFormat format) {
+  switch (format) {
+    case GST_VIDEO_FORMAT_NV12:
+      return v4l2_fourcc('N', 'V', '1', '2');
+    default:
+      return 0;
+  }
+}
+
+std::shared_ptr<void> HoldSampleRef(GstSample* sample) {
+  if (sample == nullptr) {
+    return {};
+  }
+  GstSample* ref = gst_sample_ref(sample);
+  return std::shared_ptr<void>(ref, [](void* ptr) {
+    gst_sample_unref(static_cast<GstSample*>(ptr));
+  });
+}
+
 }  // namespace
 
-std::optional<ConvertedFrame> FrameConverter::ConvertNv12SampleToRgbFrame(
+std::optional<vision::FrameRef> FrameConverter::ExtractNv12Frame(
+    GstSample* sample,
+    const std::string& camera_id) const {
+  if (sample == nullptr || camera_id.empty()) {
+    return std::nullopt;
+  }
+
+  GstBuffer* buffer = gst_sample_get_buffer(sample);
+  GstCaps* caps = gst_sample_get_caps(sample);
+  if (!buffer || !caps) {
+    return std::nullopt;
+  }
+
+  GstVideoInfo info;
+  if (!gst_video_info_from_caps(&info, caps)) {
+    return std::nullopt;
+  }
+  if (GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_NV12) {
+    return std::nullopt;
+  }
+
+  const int w = GST_VIDEO_INFO_WIDTH(&info);
+  const int h = GST_VIDEO_INFO_HEIGHT(&info);
+  const int stride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 0);
+  const uint64_t pts_ns = GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer))
+                              ? GST_BUFFER_PTS(buffer) : 0;
+
+  vision::FrameRef frame;
+  frame.camera_id = camera_id;
+  frame.pts_ns = pts_ns;
+  frame.width = w;
+  frame.height = h;
+  frame.stride = stride;
+  frame.fourcc = VideoFormatToFourcc(GST_VIDEO_INFO_FORMAT(&info));
+  frame.pixel_format = vision::PixelFormat::kNv12;
+  frame.bytes_used = gst_buffer_get_size(buffer);
+  frame.dmabuf_fd = ExtractDmabufFd(buffer);
+  if (frame.dmabuf_fd < 0) {
+    return std::nullopt;
+  }
+  frame.owned_data = HoldSampleRef(sample);
+  return frame;
+}
+
+std::optional<ConvertedFrame> FrameConverter::ConvertToRgbFrame(
     GstSample* sample,
     const std::string& camera_id) const {
   if (sample == nullptr || camera_id.empty()) {
@@ -48,23 +112,13 @@ std::optional<ConvertedFrame> FrameConverter::ConvertNv12SampleToRgbFrame(
                               ? GST_BUFFER_PTS(buffer) : 0;
 
   cv::Mat rgb;
-  bool rga_ok = false;
   const int fd = ExtractDmabufFd(buffer);
-  if (fd >= 0) {
-    rga_ok = mediapipe_demo::ConvertNv12ToRgb(fd, w, h, stride, &rgb);
+  if (GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_NV12 ||
+      fd < 0 ||
+      !mediapipe_demo::ConvertNv12ToRgb(fd, w, h, stride, &rgb)) {
+    return std::nullopt;
   }
 
-  if (!rga_ok) {
-    GstMapInfo map{};
-    if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
-      return std::nullopt;
-    }
-    if (w > 0 && h > 0 && map.size >= static_cast<size_t>(stride) * h * 3 / 2) {
-      cv::Mat nv12(h * 3 / 2, w, CV_8UC1, map.data, stride);
-      cv::cvtColor(nv12, rgb, cv::COLOR_YUV2RGB_NV12);
-    }
-    gst_buffer_unmap(buffer, &map);
-  }
   if (rgb.empty()) {
     return std::nullopt;
   }
@@ -72,7 +126,6 @@ std::optional<ConvertedFrame> FrameConverter::ConvertNv12SampleToRgbFrame(
   auto rgb_holder = std::make_shared<cv::Mat>(std::move(rgb));
   ConvertedFrame output;
   output.rgb_holder = rgb_holder;
-  output.used_rga = rga_ok;
   output.frame.camera_id = camera_id;
   output.frame.pts_ns = pts_ns;
   output.frame.width = w;

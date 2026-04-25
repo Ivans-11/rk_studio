@@ -314,31 +314,44 @@ bool PreprocessFrameToRknn(const CameraFrame& frame,
   const size_t dst_size = dst_attr.size_with_stride > 0 ? dst_attr.size_with_stride
                                                         : dst_attr.size;
 
-  ScratchDmabuf* scratch = AcquireScratchBuffer(dst_size,
-                                                target_size.width,
-                                                target_size.height,
-                                                dst_wstride,
-                                                dst_hstride,
-                                                RK_FORMAT_RGB_888);
-  if (scratch == nullptr) {
-    g_hw_preprocess_available = false;
-    return false;
-  }
-
   rga_buffer_t src = wrapbuffer_fd_t(frame.dmabuf_fd,
                                      frame.width,
                                      frame.height,
                                      frame.stride,
                                      frame.height,
                                      src_format);
-  rga_buffer_t dst = wrapbuffer_fd_t(scratch->fd(),
-                                     scratch->width(),
-                                     scratch->height(),
-                                     scratch->wstride(),
-                                     scratch->hstride(),
-                                     scratch->format());
+  ScratchDmabuf* scratch = nullptr;
+  const bool use_rknn_mem_fd = dst_mem->fd >= 0 && dst_mem->virt_addr != nullptr;
+  if (use_rknn_mem_fd) {
+    std::memset(dst_mem->virt_addr, 0,
+                std::min(static_cast<size_t>(dst_mem->size), dst_size));
+  } else {
+    scratch = AcquireScratchBuffer(dst_size,
+                                   target_size.width,
+                                   target_size.height,
+                                   dst_wstride,
+                                   dst_hstride,
+                                   RK_FORMAT_RGB_888);
+    if (scratch == nullptr) {
+      g_hw_preprocess_available = false;
+      return false;
+    }
+    std::memset(scratch->addr(), 0, scratch->size());
+  }
 
-  std::memset(scratch->addr(), 0, scratch->size());
+  rga_buffer_t dst = use_rknn_mem_fd
+                         ? wrapbuffer_fd_t(dst_mem->fd,
+                                           target_size.width,
+                                           target_size.height,
+                                           dst_wstride,
+                                           dst_hstride,
+                                           RK_FORMAT_RGB_888)
+                         : wrapbuffer_fd_t(scratch->fd(),
+                                           scratch->width(),
+                                           scratch->height(),
+                                           scratch->wstride(),
+                                           scratch->hstride(),
+                                           scratch->format());
 
   const PreprocessMeta current_meta = BuildMeta(clamped, target_size, keep_aspect);
   const int dst_w = keep_aspect
@@ -374,9 +387,11 @@ bool PreprocessFrameToRknn(const CameraFrame& frame,
     return false;
   }
 
-  std::memcpy(dst_mem->virt_addr,
-              scratch->addr(),
-              std::min(static_cast<size_t>(dst_mem->size), scratch->size()));
+  if (!use_rknn_mem_fd) {
+    std::memcpy(dst_mem->virt_addr,
+                scratch->addr(),
+                std::min(static_cast<size_t>(dst_mem->size), scratch->size()));
+  }
   return true;
 #endif
 }

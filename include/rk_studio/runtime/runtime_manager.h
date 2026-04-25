@@ -24,6 +24,7 @@ class RuntimeManager : public QObject {
   bool StartPreview(std::string* err);
   bool StartRecording(std::string* err);
   bool StartRtsp(std::string* err);
+  void StopPreview();
   void StopRecording();
   void StopRtsp();
   void StopAll();
@@ -44,6 +45,7 @@ class RuntimeManager : public QObject {
   void PreviewCameraFailed(QString camera_id, QString reason, bool fatal);
   void MediapipeFrameReady(QString camera_id, QImage image);
   void MediapipeResultReady(rkstudio::vision::MediapipeResult result);
+  void YoloFrameReady(QString camera_id, QImage image);
   void YoloResultReady(rkstudio::vision::YoloResult result);
 
  private:

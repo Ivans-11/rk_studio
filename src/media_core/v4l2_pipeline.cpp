@@ -1,7 +1,9 @@
 #include "rk_studio/media_core/v4l2_pipeline.h"
 
 #include <chrono>
+#include <iostream>
 #include <memory>
+#include <string>
 
 #include <gst/video/video-event.h>
 #include <gst/video/video.h>
@@ -24,23 +26,53 @@ struct GstUnrefDeleter {
   }
 };
 
-GstCaps* MakeSourceCaps(const V4l2Pipeline::SourceOptions& source) {
+GstCaps* MakeSourceCaps(const V4l2Pipeline::SourceOptions& source, bool include_framerate) {
   if (rkinfra::IsJpegLikeFormat(source.input_format)) {
-    return gst_caps_new_simple("image/jpeg", "width", G_TYPE_INT, source.width,
-                               "height", G_TYPE_INT, source.height, "framerate",
-                               GST_TYPE_FRACTION, source.fps, 1, nullptr);
+    GstCaps* caps = gst_caps_new_simple("image/jpeg", "width", G_TYPE_INT, source.width,
+                                        "height", G_TYPE_INT, source.height, nullptr);
+    if (include_framerate) {
+      gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, source.fps, 1, nullptr);
+    }
+    return caps;
   }
-  return gst_caps_new_simple("video/x-raw", "width", G_TYPE_INT, source.width,
-                             "height", G_TYPE_INT, source.height, "format",
-                             G_TYPE_STRING, source.input_format.c_str(), "framerate",
-                             GST_TYPE_FRACTION, source.fps, 1, nullptr);
+  GstCaps* caps = gst_caps_new_simple("video/x-raw", "width", G_TYPE_INT, source.width,
+                                      "height", G_TYPE_INT, source.height, "format",
+                                      G_TYPE_STRING, source.input_format.c_str(), nullptr);
+  if (include_framerate) {
+    gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, source.fps, 1, nullptr);
+  }
+  return caps;
 }
 
-GstCaps* MakeNormalizedCaps(const V4l2Pipeline::SourceOptions& source) {
+GstCaps* MakeNormalizedCaps(const V4l2Pipeline::SourceOptions& source, bool include_framerate) {
+  GstCaps* caps = gst_caps_new_simple("video/x-raw", "width", G_TYPE_INT, source.width,
+                                      "height", G_TYPE_INT, source.height, "format",
+                                      G_TYPE_STRING, "NV12", nullptr);
+  if (include_framerate) {
+    gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, source.fps, 1, nullptr);
+  }
+  return caps;
+}
+
+GstCaps* MakeRateCaps(const V4l2Pipeline::SourceOptions& source) {
   return gst_caps_new_simple("video/x-raw", "width", G_TYPE_INT, source.width,
                              "height", G_TYPE_INT, source.height, "format",
                              G_TYPE_STRING, "NV12", "framerate",
                              GST_TYPE_FRACTION, source.fps, 1, nullptr);
+}
+
+std::string BranchSummary(const V4l2Pipeline::BuildOptions& options) {
+  std::string branches;
+  if (options.preview.enabled) {
+    branches += branches.empty() ? "preview" : "+preview";
+  }
+  if (options.record.enabled) {
+    branches += branches.empty() ? "record" : "+record";
+  }
+  if (options.app_sink.enabled) {
+    branches += branches.empty() ? "appsink" : "+appsink";
+  }
+  return branches.empty() ? "none" : branches;
 }
 
 }  // namespace
@@ -61,6 +93,15 @@ bool V4l2Pipeline::Build(const BuildOptions& options,
   error_callback_ = std::move(error_callback);
 
   resolved_device_ = options_.source.device;
+
+  std::cerr << "[v4l2] build " << options_.source.id
+            << " device=" << resolved_device_
+            << " format=" << options_.source.input_format
+            << " size=" << options_.source.width << "x" << options_.source.height
+            << " fps=" << options_.source.fps << "/1"
+            << " io=" << options_.source.io_mode
+            << " branches=" << BranchSummary(options_)
+            << "\n";
 
   if (options_.record.enabled) {
     record_output_path_ = (options_.record.session_dir / (options_.source.id + ".mkv")).string();
@@ -87,6 +128,8 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
     normalize_convert_ = gst_element_factory_make("videoconvert", ("normalize_convert_" + options_.source.id).c_str());
     normalize_caps_ = gst_element_factory_make("capsfilter", ("normalize_caps_" + options_.source.id).c_str());
   }
+  rate_filter_ = gst_element_factory_make("videorate", ("videorate_" + options_.source.id).c_str());
+  rate_caps_ = gst_element_factory_make("capsfilter", ("rate_caps_" + options_.source.id).c_str());
 
   if (options_.preview.enabled) {
     preview_convert_ = gst_element_factory_make("videoconvert", ("preview_convert_" + options_.source.id).c_str());
@@ -123,6 +166,7 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
   }
 
   if (!pipeline_ || !source_ || !source_caps_ ||
+      !rate_filter_ || !rate_caps_ ||
       (needs_normalize && !normalize_convert_) ||
       (needs_normalize && !normalize_caps_) || (jpeg_input && !jpeg_decoder_) ||
       (options_.preview.enabled && (!preview_convert_ || !preview_sink_)) ||
@@ -149,15 +193,19 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
   }
   rkinfra::SetPropertyIfExists(source_, "io-mode", io_mode);
 
-  GstCaps* source_caps = MakeSourceCaps(options_.source);
+  GstCaps* source_caps = MakeSourceCaps(options_.source, false);
   g_object_set(G_OBJECT(source_caps_), "caps", source_caps, nullptr);
   gst_caps_unref(source_caps);
 
   if (needs_normalize) {
-    GstCaps* normalize_caps = MakeNormalizedCaps(options_.source);
+    GstCaps* normalize_caps = MakeNormalizedCaps(options_.source, false);
     g_object_set(G_OBJECT(normalize_caps_), "caps", normalize_caps, nullptr);
     gst_caps_unref(normalize_caps);
   }
+  rkinfra::SetPropertyIfExists(rate_filter_, "drop-only", TRUE);
+  GstCaps* rate_caps = MakeRateCaps(options_.source);
+  g_object_set(G_OBJECT(rate_caps_), "caps", rate_caps, nullptr);
+  gst_caps_unref(rate_caps);
 
   if (options_.preview.enabled) {
     rkinfra::SetPropertyIfExists(preview_sink_, "sync", FALSE);
@@ -198,6 +246,7 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
   if (normalize_convert_ != nullptr) {
     gst_bin_add_many(GST_BIN(pipeline_), normalize_convert_, normalize_caps_, nullptr);
   }
+  gst_bin_add_many(GST_BIN(pipeline_), rate_filter_, rate_caps_, nullptr);
   if (options_.preview.enabled) {
     gst_bin_add_many(GST_BIN(pipeline_), preview_convert_, preview_sink_, nullptr);
     if (preview_queue_) {
@@ -222,15 +271,15 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
   GstElement* source_tail = nullptr;
   bool link_ok = false;
   if (jpeg_input) {
-    link_ok = gst_element_link_many(source_, source_caps_, jpeg_decoder_, normalize_convert_, normalize_caps_, nullptr);
-    source_tail = normalize_caps_;
+    link_ok = gst_element_link_many(source_, source_caps_, jpeg_decoder_, normalize_convert_, normalize_caps_,
+                                    rate_filter_, rate_caps_, nullptr);
   } else if (needs_normalize) {
-    link_ok = gst_element_link_many(source_, source_caps_, normalize_convert_, normalize_caps_, nullptr);
-    source_tail = normalize_caps_;
+    link_ok = gst_element_link_many(source_, source_caps_, normalize_convert_, normalize_caps_,
+                                    rate_filter_, rate_caps_, nullptr);
   } else {
-    link_ok = gst_element_link(source_, source_caps_);
-    source_tail = source_caps_;
+    link_ok = gst_element_link_many(source_, source_caps_, rate_filter_, rate_caps_, nullptr);
   }
+  source_tail = rate_caps_;
   if (!link_ok) {
     if (err != nullptr) {
       *err = "failed to link source chain for " + options_.source.id;
@@ -412,6 +461,8 @@ void V4l2Pipeline::Stop() {
   jpeg_decoder_ = nullptr;
   normalize_convert_ = nullptr;
   normalize_caps_ = nullptr;
+  rate_filter_ = nullptr;
+  rate_caps_ = nullptr;
   preview_convert_ = nullptr;
   preview_sink_ = nullptr;
   encoder_ = nullptr;

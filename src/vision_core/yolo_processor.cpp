@@ -15,6 +15,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "mediapipe/common/rknn_model.h"
+#include "mediapipe/preprocess/hw_preprocess.h"
 #include "mediapipe/preprocess/image_ops.h"
 
 namespace rkstudio::vision {
@@ -285,21 +286,27 @@ class YoloProcessor final : public IYoloProcessor {
     result.frame_width = frame.width;
     result.frame_height = frame.height;
 
-    cv::Mat rgb = ToRgbMat(frame);
-    if (rgb.empty()) {
-      result.error = "empty YOLO input frame";
-      return result;
-    }
-
     mediapipe_demo::PreprocessMeta meta;
-    cv::Mat input = mediapipe_demo::LetterboxPadding(
-        rgb, cv::Size(kYoloInputSize, kYoloInputSize), &meta);
-    if (!input.isContinuous()) {
-      input = input.clone();
-    }
-
     std::vector<std::vector<float>> outputs;
-    if (!model_ || !model_->Infer(input, &outputs) || outputs.size() != kHeadCount * 3) {
+    if (!model_ || !InferWithHardwarePreprocess(frame, &meta, &outputs)) {
+      cv::Mat rgb = ToRgbMat(frame);
+      if (rgb.empty()) {
+        result.error = "empty YOLO input frame";
+        return result;
+      }
+
+      cv::Mat input = mediapipe_demo::LetterboxPadding(
+          rgb, cv::Size(kYoloInputSize, kYoloInputSize), &meta);
+      if (!input.isContinuous()) {
+        input = input.clone();
+      }
+
+      if (!model_ || !model_->Infer(input, &outputs)) {
+        result.error = "YOLO RKNN inference failed";
+        return result;
+      }
+    }
+    if (outputs.size() != kHeadCount * 3) {
       result.error = "YOLO RKNN inference failed";
       return result;
     }
@@ -321,6 +328,39 @@ class YoloProcessor final : public IYoloProcessor {
     result.fps = elapsed.count() > 0.0 ? static_cast<float>(1.0 / elapsed.count()) : 0.0f;
     result.ok = true;
     return result;
+  }
+
+  bool InferWithHardwarePreprocess(const FrameRef& frame,
+                                   mediapipe_demo::PreprocessMeta* meta,
+                                   std::vector<std::vector<float>>* outputs) {
+    if (!model_ || meta == nullptr || outputs == nullptr ||
+        frame.pixel_format != PixelFormat::kNv12 ||
+        frame.dmabuf_fd < 0 || frame.fourcc == 0 ||
+        frame.width <= 0 || frame.height <= 0 || frame.stride <= 0) {
+      return false;
+    }
+
+    mediapipe_demo::CameraFrame camera_frame;
+    camera_frame.width = frame.width;
+    camera_frame.height = frame.height;
+    camera_frame.stride = frame.stride;
+    camera_frame.fourcc = frame.fourcc;
+    camera_frame.bytes_used = frame.bytes_used;
+    camera_frame.dmabuf_fd = frame.dmabuf_fd;
+
+    rknn_tensor_mem* input_mem = model_->InputMemory();
+    if (input_mem == nullptr ||
+        !mediapipe_demo::PreprocessFrameToRknn(
+            camera_frame,
+            cv::Rect(0, 0, frame.width, frame.height),
+            true,
+            input_mem,
+            model_->InputAttr(),
+            meta)) {
+      return false;
+    }
+
+    return model_->SyncInputMemory() && model_->Run(outputs);
   }
 
   YoloProcessorConfig config_;

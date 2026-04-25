@@ -12,7 +12,7 @@
 namespace rkinfra {
 class TelemetrySink;
 struct SessionPaths;
-struct AppConfig;
+struct RecordingConfig;
 struct OutputStreamInfo;
 }  // namespace rkinfra
 
@@ -41,14 +41,14 @@ class SessionWriter {
 
   bool active() const;
   const rkinfra::SessionPaths* session_paths() const;
-  const rkinfra::AppConfig* compat_config() const;
+  const rkinfra::RecordingConfig* recording_config() const;
   rkinfra::TelemetrySink* telemetry_sink();
 
  private:
   std::optional<SessionArtifacts> session_artifacts_;
   std::unique_ptr<rkinfra::TelemetrySink> telemetry_sink_;
   std::unique_ptr<rkinfra::SessionPaths> session_paths_;
-  std::unique_ptr<rkinfra::AppConfig> compat_config_;
+  std::unique_ptr<rkinfra::RecordingConfig> recording_config_;
   JsonlFileWriter studio_event_writer_;
   std::unique_ptr<JsonlFileWriter> mediapipe_writer_;
   std::mutex event_mu_;

@@ -12,15 +12,15 @@
 
 namespace rkstudio::ui {
 
-class MediapipeCanvasWidget : public QWidget {
+class YoloCanvasWidget : public QWidget {
   Q_OBJECT
 
  public:
-  explicit MediapipeCanvasWidget(QWidget* parent = nullptr);
-  explicit MediapipeCanvasWidget(QString camera_id, QWidget* parent = nullptr);
+  explicit YoloCanvasWidget(QWidget* parent = nullptr);
+  explicit YoloCanvasWidget(QString camera_id, QWidget* parent = nullptr);
 
   void SetFrame(const QImage& image);
-  void SetResult(const vision::MediapipeResult& result);
+  void SetResult(const vision::YoloResult& result);
   void Clear();
 
  protected:
@@ -30,7 +30,7 @@ class MediapipeCanvasWidget : public QWidget {
   void DrawCanvas(QPainter& painter, const QRect& rect);
 
   QImage frame_;
-  std::optional<vision::MediapipeResult> result_;
+  std::optional<vision::YoloResult> result_;
   QLabel* title_ = nullptr;
   QLabel* status_ = nullptr;
   QFrame* canvas_ = nullptr;

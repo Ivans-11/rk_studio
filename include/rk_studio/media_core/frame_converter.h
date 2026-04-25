@@ -18,12 +18,15 @@ namespace rkstudio::media {
 struct ConvertedFrame {
   vision::FrameRef frame;
   std::shared_ptr<cv::Mat> rgb_holder;
-  bool used_rga = false;
 };
 
 class FrameConverter {
  public:
-  std::optional<ConvertedFrame> ConvertNv12SampleToRgbFrame(
+  std::optional<vision::FrameRef> ExtractNv12Frame(
+      GstSample* sample,
+      const std::string& camera_id) const;
+
+  std::optional<ConvertedFrame> ConvertToRgbFrame(
       GstSample* sample,
       const std::string& camera_id) const;
 };

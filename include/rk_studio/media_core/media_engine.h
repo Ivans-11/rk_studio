@@ -37,6 +37,7 @@ class MediaEngine : public QObject {
   void LoadBoardConfig(const BoardConfig& board_config);
   void ApplySessionProfile(const SessionProfile& profile);
   bool StartPreview(std::string* err);
+  bool StartPreview(const std::vector<std::string>& excluded_camera_ids, std::string* err);
   bool StartRecording(std::string* err);
   bool StartRtsp(std::string* err);
   void StopPreview();
@@ -61,6 +62,10 @@ class MediaEngine : public QObject {
   using CameraMap = std::map<std::string, std::unique_ptr<V4l2Pipeline>>;
 
   bool RebuildPipelines(bool recording, std::string* err);
+  bool RebuildPipelines(
+      bool recording,
+      const std::vector<std::string>& excluded_camera_ids,
+      std::string* err);
   std::unique_ptr<V4l2Pipeline> BuildOnePipeline(
       const std::string& camera_id, bool recording, std::string* err);
   void StopOnePipeline(const std::string& camera_id);

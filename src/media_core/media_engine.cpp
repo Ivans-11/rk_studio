@@ -43,6 +43,19 @@ std::vector<rkinfra::OutputStreamInfo> CollectOutputs(
   return outputs;
 }
 
+TelemetryEvent FromInfraStreamEvent(const rkinfra::StreamEvent& event) {
+  TelemetryEvent output;
+  output.monotonic_ns = event.monotonic_ns;
+  output.stream_id = event.stream_id;
+  output.seq = event.seq;
+  output.pts_ns = event.pts_ns;
+  output.category = event.category;
+  output.stage = event.stage;
+  output.status = event.status;
+  output.reason = event.reason;
+  return output;
+}
+
 }  // namespace
 
 MediaEngine::MediaEngine(QObject* parent) : QObject(parent) {
@@ -62,6 +75,10 @@ void MediaEngine::ApplySessionProfile(const SessionProfile& profile) {
 }
 
 bool MediaEngine::StartPreview(std::string* err) {
+  return StartPreview({}, err);
+}
+
+bool MediaEngine::StartPreview(const std::vector<std::string>& excluded_camera_ids, std::string* err) {
   if (board_config_.cameras.empty()) {
     if (err != nullptr) {
       *err = "board config is empty";
@@ -75,7 +92,7 @@ bool MediaEngine::StartPreview(std::string* err) {
     return false;
   }
 
-  return RebuildPipelines(false, err);
+  return RebuildPipelines(false, excluded_camera_ids, err);
 }
 
 bool MediaEngine::StartRecording(std::string* err) {
@@ -218,11 +235,21 @@ std::unique_ptr<V4l2Pipeline> MediaEngine::BuildOnePipeline(
 }
 
 bool MediaEngine::RebuildPipelines(bool recording, std::string* err) {
+  return RebuildPipelines(recording, {}, err);
+}
+
+bool MediaEngine::RebuildPipelines(
+    bool recording,
+    const std::vector<std::string>& excluded_camera_ids,
+    std::string* err) {
   StopPipelines();
 
   const std::vector<std::string> camera_ids =
       recording ? UnionCameraIds(session_profile_) : session_profile_.preview_cameras;
   for (const auto& camera_id : camera_ids) {
+    if (!recording && Contains(excluded_camera_ids, camera_id)) {
+      continue;
+    }
     auto pipeline = BuildOnePipeline(camera_id, recording, err);
     if (!pipeline || !pipeline->Start(err)) {
       StopPipelines();
@@ -284,7 +311,7 @@ void MediaEngine::FinalizeRecording(bool ok) {
 }
 
 bool MediaEngine::StartAudioRecorder(std::string* err) {
-  const auto* config = session_writer_ ? session_writer_->compat_config() : nullptr;
+  const auto* config = session_writer_ ? session_writer_->recording_config() : nullptr;
   if (!config || !config->audio.has_value() || !session_writer_->session_paths()) {
     audio_recorder_.reset();
     return true;
@@ -294,7 +321,7 @@ bool MediaEngine::StartAudioRecorder(std::string* err) {
       *config->audio, config->queue.audio_mux_max_time_ns,
       [this](rkinfra::StreamEvent event) {
         event.category = "audio";
-        EmitTelemetry(event);
+        EmitTelemetry(FromInfraStreamEvent(event));
       },
       session_writer_->session_paths()->session_dir);
 

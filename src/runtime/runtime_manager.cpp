@@ -1,8 +1,36 @@
 #include "rk_studio/runtime/runtime_manager.h"
 
+#include <algorithm>
 #include <utility>
+#include <vector>
 
 namespace rkstudio::runtime {
+namespace {
+
+std::vector<std::string> ActiveVisionPreviewCameras(
+    const SessionProfile& profile,
+    bool mediapipe_enabled,
+    bool yolo_enabled) {
+  std::vector<std::string> cameras;
+  auto add_if_needed = [&cameras](const std::string& camera_id) {
+    if (camera_id.empty()) {
+      return;
+    }
+    if (std::find(cameras.begin(), cameras.end(), camera_id) == cameras.end()) {
+      cameras.push_back(camera_id);
+    }
+  };
+
+  if (mediapipe_enabled) {
+    add_if_needed(profile.selected_mediapipe_camera);
+  }
+  if (yolo_enabled) {
+    add_if_needed(profile.selected_yolo_camera);
+  }
+  return cameras;
+}
+
+}  // namespace
 
 RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
   qRegisterMetaType<rkstudio::AppState>();
@@ -24,6 +52,8 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
           this, &RuntimeManager::MediapipeFrameReady);
   connect(vision_engine_, &media::VisionEngine::MediapipeResultReady,
           this, &RuntimeManager::MediapipeResultReady);
+  connect(vision_engine_, &media::VisionEngine::YoloFrameReady,
+          this, &RuntimeManager::YoloFrameReady);
   connect(vision_engine_, &media::VisionEngine::YoloResultReady,
           this, &RuntimeManager::YoloResultReady);
 
@@ -65,13 +95,17 @@ bool RuntimeManager::StartPreview(std::string* err) {
     return false;
   }
 
-  if (!media_engine_->StartPreview(err)) {
+  const auto excluded_preview_cameras = ActiveVisionPreviewCameras(
+      media_engine_->session_profile(),
+      vision_engine_->mediapipe_enabled(),
+      vision_engine_->yolo_enabled());
+  if (!media_engine_->StartPreview(excluded_preview_cameras, err)) {
     EnterErrorState();
     return false;
   }
 
   vision_engine_->SetSessionWriter(nullptr);
-  if (!vision_engine_->StartActivePipelines(AppState::kPreviewing, err)) {
+  if (!vision_engine_->SyncForState(AppState::kPreviewing, err)) {
     media_engine_->StopPreview();
     EnterErrorState();
     return false;
@@ -88,7 +122,6 @@ bool RuntimeManager::StartRecording(std::string* err) {
   }
 
   if (state_ == AppState::kPreviewing) {
-    vision_engine_->StopPipelines();
     media_engine_->StopPreview();
   }
 
@@ -98,7 +131,7 @@ bool RuntimeManager::StartRecording(std::string* err) {
   }
 
   vision_engine_->SetSessionWriter(media_engine_->session_writer());
-  if (!vision_engine_->StartActivePipelines(AppState::kRecording, err)) {
+  if (!vision_engine_->SyncForState(AppState::kRecording, err)) {
     vision_engine_->SetSessionWriter(nullptr);
     media_engine_->StopRecording(false);
     EnterErrorState();
@@ -116,7 +149,6 @@ bool RuntimeManager::StartRtsp(std::string* err) {
   }
 
   if (state_ == AppState::kPreviewing) {
-    vision_engine_->StopPipelines();
     media_engine_->StopPreview();
   }
 
@@ -136,6 +168,19 @@ void RuntimeManager::StopRecording() {
   vision_engine_->StopPipelines();
   vision_engine_->SetSessionWriter(nullptr);
   media_engine_->StopRecording(true);
+  std::string err;
+  if (!vision_engine_->SyncForState(AppState::kIdle, &err)) {
+    EnterErrorState();
+    return;
+  }
+  SetState(AppState::kIdle);
+}
+
+void RuntimeManager::StopPreview() {
+  if (state_ != AppState::kPreviewing) {
+    return;
+  }
+  media_engine_->StopPreview();
   SetState(AppState::kIdle);
 }
 

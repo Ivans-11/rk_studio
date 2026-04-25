@@ -1,15 +1,6 @@
 [session]
 preview_cameras = ["cam0", "cam1", "cam2", "cam3"]
-record_cameras = ["cam0", "cam1", "cam2", "cam3"]
-output_dir = "./records"
 prefix = "rk_studio"
 audio_source = ""
 selected_mediapipe_camera = "cam0"
 selected_yolo_camera = "cam1"
-
-[encoder]
-gop = 30
-
-[ui]
-preview_rows = 2
-preview_cols = 2

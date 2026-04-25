@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <sstream>
+#include <utility>
 
 #include "rk_studio/infra/config_types.h"
 #include "rk_studio/infra/runtime.h"
@@ -13,8 +14,30 @@ namespace {
 
 constexpr size_t kTelemetryQueueSize = 50'000;
 
-rkinfra::AppConfig BuildCompatConfig(const BoardConfig& board_config, const SessionProfile& profile) {
-  rkinfra::AppConfig config;
+rkinfra::AudioConfig ToInfraAudioConfig(const AudioSource& source) {
+  rkinfra::AudioConfig config;
+  config.id = source.id;
+  config.device = source.device;
+  config.rate = source.rate;
+  config.channels = source.channels;
+  return config;
+}
+
+rkinfra::StreamEvent ToInfraStreamEvent(const TelemetryEvent& event) {
+  rkinfra::StreamEvent output;
+  output.monotonic_ns = event.monotonic_ns;
+  output.stream_id = event.stream_id;
+  output.seq = event.seq;
+  output.pts_ns = event.pts_ns;
+  output.category = event.category;
+  output.stage = event.stage;
+  output.status = event.status;
+  output.reason = event.reason;
+  return output;
+}
+
+rkinfra::RecordingConfig BuildRecordingConfig(const BoardConfig& board_config, const SessionProfile& profile) {
+  rkinfra::RecordingConfig config;
   config.record.output_dir = profile.output_dir;
   config.record.prefix = profile.prefix;
   config.encoder.gop = profile.gop;
@@ -40,12 +63,12 @@ rkinfra::AppConfig BuildCompatConfig(const BoardConfig& board_config, const Sess
   }
 
   if (const AudioSource* audio = FindAudioSource(board_config, profile.audio_source)) {
-    config.audio = *audio;
+    config.audio = ToInfraAudioConfig(*audio);
   }
   return config;
 }
 
-std::vector<std::string> BuildEnabledStreamIds(const rkinfra::AppConfig& config) {
+std::vector<std::string> BuildEnabledStreamIds(const rkinfra::RecordingConfig& config) {
   std::vector<std::string> ids;
   for (const auto& video : config.video_streams) {
     ids.push_back(video.id);
@@ -56,7 +79,7 @@ std::vector<std::string> BuildEnabledStreamIds(const rkinfra::AppConfig& config)
   return ids;
 }
 
-std::string BuildReferenceStreamId(const rkinfra::AppConfig& config) {
+std::string BuildReferenceStreamId(const rkinfra::RecordingConfig& config) {
   if (!config.video_streams.empty()) {
     return config.video_streams.front().id;
   }
@@ -93,8 +116,8 @@ SessionWriter::~SessionWriter() {
 bool SessionWriter::Initialize(const BoardConfig& board_config,
                                const SessionProfile& profile,
                                std::string* err) {
-  compat_config_ = std::make_unique<rkinfra::AppConfig>(BuildCompatConfig(board_config, profile));
-  session_paths_ = std::make_unique<rkinfra::SessionPaths>(rkinfra::CreateSessionPaths(compat_config_->record));
+  recording_config_ = std::make_unique<rkinfra::RecordingConfig>(BuildRecordingConfig(board_config, profile));
+  session_paths_ = std::make_unique<rkinfra::SessionPaths>(rkinfra::CreateSessionPaths(recording_config_->record));
   if (!rkinfra::EnsureSessionDirectory(*session_paths_, err)) {
     return false;
   }
@@ -105,10 +128,10 @@ bool SessionWriter::Initialize(const BoardConfig& board_config,
     return false;
   }
 
-  reference_stream_id_ = BuildReferenceStreamId(*compat_config_);
+  reference_stream_id_ = BuildReferenceStreamId(*recording_config_);
   telemetry_sink_ = std::make_unique<rkinfra::TelemetrySink>(
-      kTelemetryQueueSize, session_paths_->sidecar_path.string(), compat_config_->sync,
-      BuildEnabledStreamIds(*compat_config_),
+      kTelemetryQueueSize, session_paths_->sidecar_path.string(), recording_config_->sync,
+      BuildEnabledStreamIds(*recording_config_),
       reference_stream_id_);
   if (!telemetry_sink_->Start(err)) {
     return false;
@@ -127,7 +150,7 @@ void SessionWriter::WriteEvent(const TelemetryEvent& event) {
 
 bool SessionWriter::RecordSyncEvent(const TelemetryEvent& event) {
   if (telemetry_sink_) {
-    telemetry_sink_->Record(event);
+    telemetry_sink_->Record(ToInfraStreamEvent(event));
     return true;
   }
   return false;
@@ -155,8 +178,8 @@ void SessionWriter::WriteMediapipeLine(const std::string& line) {
 }
 
 void SessionWriter::WriteStartMeta(const std::vector<rkinfra::OutputStreamInfo>& outputs) {
-  if (session_paths_ && compat_config_) {
-    rkinfra::WriteSessionMeta(*session_paths_, *compat_config_, "starting", recording_started_utc_,
+  if (session_paths_ && recording_config_) {
+    rkinfra::WriteSessionMeta(*session_paths_, *recording_config_, "starting", recording_started_utc_,
                               recording_start_monotonic_ns_, 0ULL, outputs, reference_stream_id_);
   }
 }
@@ -166,14 +189,14 @@ void SessionWriter::Finalize(bool ok, const std::vector<rkinfra::OutputStreamInf
     telemetry_sink_->Stop();
     rkinfra::WriteSyncReport(session_paths_->sync_path, telemetry_sink_->BuildSyncReport());
   }
-  if (session_paths_ && compat_config_) {
-    rkinfra::WriteSessionMeta(*session_paths_, *compat_config_, ok ? "stopped" : "error", recording_started_utc_,
+  if (session_paths_ && recording_config_) {
+    rkinfra::WriteSessionMeta(*session_paths_, *recording_config_, ok ? "stopped" : "error", recording_started_utc_,
                               recording_start_monotonic_ns_, 0ULL, outputs, reference_stream_id_);
   }
 
   telemetry_sink_.reset();
   mediapipe_writer_.reset();
-  compat_config_.reset();
+  recording_config_.reset();
   session_paths_.reset();
   session_artifacts_.reset();
   studio_event_writer_.Close();
@@ -187,8 +210,8 @@ const rkinfra::SessionPaths* SessionWriter::session_paths() const {
   return session_paths_.get();
 }
 
-const rkinfra::AppConfig* SessionWriter::compat_config() const {
-  return compat_config_.get();
+const rkinfra::RecordingConfig* SessionWriter::recording_config() const {
+  return recording_config_.get();
 }
 
 rkinfra::TelemetrySink* SessionWriter::telemetry_sink() {

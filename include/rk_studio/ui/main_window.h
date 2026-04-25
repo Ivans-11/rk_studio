@@ -10,6 +10,7 @@
 #include "rk_studio/runtime/runtime_manager.h"
 #include "rk_studio/ui/mediapipe_canvas_widget.h"
 #include "rk_studio/ui/preview_tile_widget.h"
+#include "rk_studio/ui/yolo_canvas_widget.h"
 
 namespace rkstudio::ui {
 
@@ -33,12 +34,14 @@ class MainWindow : public QMainWindow {
   void OnTileRebound(QString camera_id, WId window_id);
   void OnMediapipeFrame(QString camera_id, QImage image);
   void OnMediapipeResult(rkstudio::vision::MediapipeResult result);
+  void OnYoloFrame(QString camera_id, QImage image);
   void OnYoloResult(rkstudio::vision::YoloResult result);
 
  private:
   void BuildUi();
   void RebuildTiles();
   void SwapMediapipeTile(bool enabling);
+  void SwapYoloTile(bool enabling);
   void SetStatus(const QString& text);
   void AppendLog(const QString& line);
 
@@ -58,6 +61,7 @@ class MainWindow : public QMainWindow {
   QPlainTextEdit* log_view_ = nullptr;
   std::map<QString, PreviewTileWidget*> tiles_;
   MediapipeCanvasWidget* mediapipe_canvas_ = nullptr;
+  YoloCanvasWidget* yolo_canvas_ = nullptr;
   int telemetry_ok_skip_counter_ = 0;
   int yolo_empty_skip_counter_ = 0;
 };

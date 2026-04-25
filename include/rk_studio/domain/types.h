@@ -5,9 +5,6 @@
 #include <string>
 #include <vector>
 
-#include "rk_studio/infra/config_types.h"
-#include "rk_studio/infra/telemetry.h"
-
 namespace rkstudio {
 
 enum class AppState {
@@ -31,7 +28,12 @@ struct CameraNodeSet {
   int bitrate = 8'000'000;
 };
 
-using AudioSource = rkinfra::AudioConfig;
+struct AudioSource {
+  std::string id = "mic0";
+  std::string device = "hw:0,0";
+  int rate = 16'000;
+  int channels = 2;
+};
 
 struct MediapipeHardwareConfig {
   std::string detector_model;   // resolved at runtime if empty
@@ -75,7 +77,16 @@ struct SessionProfile {
   int gop = 30;
 };
 
-using TelemetryEvent = rkinfra::StreamEvent;
+struct TelemetryEvent {
+  uint64_t monotonic_ns = 0;
+  std::string stream_id;
+  uint64_t seq = 0;
+  int64_t pts_ns = -1;
+  std::string category;
+  std::string stage;
+  std::string status;
+  std::string reason;
+};
 
 const CameraNodeSet* FindCamera(const BoardConfig& config, const std::string& id);
 const AudioSource* FindAudioSource(const BoardConfig& config, const std::string& id);

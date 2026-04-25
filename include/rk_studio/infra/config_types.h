@@ -60,7 +60,7 @@ struct OutputStreamInfo {
   std::string output_path;
 };
 
-struct AppConfig {
+struct RecordingConfig {
   RecordConfig record;
   std::vector<VideoStreamConfig> video_streams;
   std::optional<AudioConfig> audio;

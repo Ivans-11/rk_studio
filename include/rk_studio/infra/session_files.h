@@ -24,7 +24,7 @@ SessionPaths CreateSessionPaths(const RecordConfig& record_config);
 bool EnsureSessionDirectory(const SessionPaths& paths, std::string* err);
 
 void WriteSessionMeta(const SessionPaths& paths,
-                      const AppConfig& config,
+                      const RecordingConfig& config,
                       const std::string& state,
                       const std::string& started_utc,
                       uint64_t start_monotonic_ns,
