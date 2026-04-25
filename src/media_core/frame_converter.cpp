@@ -87,7 +87,7 @@ std::optional<vision::FrameRef> FrameConverter::ExtractNv12Frame(
   return frame;
 }
 
-std::optional<ConvertedFrame> FrameConverter::ConvertToRgbFrame(
+std::optional<vision::FrameRef> FrameConverter::ConvertToRgbFrame(
     GstSample* sample,
     const std::string& camera_id) const {
   if (sample == nullptr || camera_id.empty()) {
@@ -124,18 +124,17 @@ std::optional<ConvertedFrame> FrameConverter::ConvertToRgbFrame(
   }
 
   auto rgb_holder = std::make_shared<cv::Mat>(std::move(rgb));
-  ConvertedFrame output;
-  output.rgb_holder = rgb_holder;
-  output.frame.camera_id = camera_id;
-  output.frame.pts_ns = pts_ns;
-  output.frame.width = w;
-  output.frame.height = h;
-  output.frame.stride = static_cast<int>(rgb_holder->step[0]);
-  output.frame.pixel_format = vision::PixelFormat::kRgb;
-  output.frame.mapped_ptr = rgb_holder->data;
-  output.frame.bytes_used = rgb_holder->total() * rgb_holder->elemSize();
-  output.frame.owned_data = rgb_holder;
-  return output;
+  vision::FrameRef frame;
+  frame.camera_id = camera_id;
+  frame.pts_ns = pts_ns;
+  frame.width = w;
+  frame.height = h;
+  frame.stride = static_cast<int>(rgb_holder->step[0]);
+  frame.pixel_format = vision::PixelFormat::kRgb;
+  frame.mapped_ptr = rgb_holder->data;
+  frame.bytes_used = rgb_holder->total() * rgb_holder->elemSize();
+  frame.owned_data = rgb_holder;
+  return frame;
 }
 
 }  // namespace rkstudio::media

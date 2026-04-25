@@ -1,37 +1,6 @@
 #include "rk_studio/runtime/runtime_manager.h"
 
-#include <algorithm>
-#include <utility>
-#include <vector>
-
 namespace rkstudio::runtime {
-namespace {
-
-std::vector<std::string> ActiveVisionPreviewCameras(
-    const SessionProfile& profile,
-    bool mediapipe_enabled,
-    bool yolo_enabled) {
-  std::vector<std::string> cameras;
-  auto add_if_needed = [&cameras](const std::string& camera_id) {
-    if (camera_id.empty()) {
-      return;
-    }
-    if (std::find(cameras.begin(), cameras.end(), camera_id) == cameras.end()) {
-      cameras.push_back(camera_id);
-    }
-  };
-
-  if (mediapipe_enabled) {
-    add_if_needed(profile.selected_mediapipe_camera);
-  }
-  if (yolo_enabled) {
-    add_if_needed(profile.selected_yolo_camera);
-  }
-  return cameras;
-}
-
-}  // namespace
-
 RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
   qRegisterMetaType<rkstudio::AppState>();
   qRegisterMetaType<rkstudio::TelemetryEvent>();
@@ -48,12 +17,8 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
   connect(media_engine_, &media::MediaEngine::FatalCameraFailure,
           this, &RuntimeManager::OnFatalCameraFailure);
 
-  connect(vision_engine_, &media::VisionEngine::MediapipeFrameReady,
-          this, &RuntimeManager::MediapipeFrameReady);
   connect(vision_engine_, &media::VisionEngine::MediapipeResultReady,
           this, &RuntimeManager::MediapipeResultReady);
-  connect(vision_engine_, &media::VisionEngine::YoloFrameReady,
-          this, &RuntimeManager::YoloFrameReady);
   connect(vision_engine_, &media::VisionEngine::YoloResultReady,
           this, &RuntimeManager::YoloResultReady);
 
@@ -63,14 +28,6 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
       },
       [this](const std::string& camera_id, const std::string& reason, bool fatal) {
         OnVisionCameraError(camera_id, reason, fatal);
-      },
-  });
-  vision_engine_->SetPreviewControls({
-      [this](const std::string& camera_id) {
-        media_engine_->StopPreviewPipeline(camera_id);
-      },
-      [this](const std::string& camera_id, std::string* err) {
-        return media_engine_->RestorePreviewPipeline(camera_id, err);
       },
   });
 }
@@ -95,11 +52,7 @@ bool RuntimeManager::StartPreview(std::string* err) {
     return false;
   }
 
-  const auto excluded_preview_cameras = ActiveVisionPreviewCameras(
-      media_engine_->session_profile(),
-      vision_engine_->mediapipe_enabled(),
-      vision_engine_->yolo_enabled());
-  if (!media_engine_->StartPreview(excluded_preview_cameras, err)) {
+  if (!media_engine_->StartPreview(err)) {
     EnterErrorState();
     return false;
   }

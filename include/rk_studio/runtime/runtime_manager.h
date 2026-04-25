@@ -2,7 +2,6 @@
 
 #include <string>
 
-#include <QImage>
 #include <QObject>
 #include <QtGui/qwindowdefs.h>
 
@@ -43,9 +42,7 @@ class RuntimeManager : public QObject {
   void StateChanged(rkstudio::AppState state);
   void TelemetryObserved(rkstudio::TelemetryEvent event);
   void PreviewCameraFailed(QString camera_id, QString reason, bool fatal);
-  void MediapipeFrameReady(QString camera_id, QImage image);
   void MediapipeResultReady(rkstudio::vision::MediapipeResult result);
-  void YoloFrameReady(QString camera_id, QImage image);
   void YoloResultReady(rkstudio::vision::YoloResult result);
 
  private:

@@ -12,7 +12,7 @@ class IMediapipeProcessor {
   virtual ~IMediapipeProcessor() = default;
 
   virtual bool Start(const MediapipeProcessorConfig& config, std::string* err) = 0;
-  virtual void Submit(const FrameRef& frame) = 0;
+  virtual void Submit(const VisionFrame& frame) = 0;
   virtual std::optional<MediapipeResult> PollResult() = 0;
   virtual void Stop() = 0;
 };

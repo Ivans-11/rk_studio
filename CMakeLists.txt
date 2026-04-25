@@ -49,8 +49,6 @@ set(RK_STUDIO_SOURCES
   src/media_core/session_writer.cpp
   src/media_core/rtsp_server.cpp
   src/ui/preview_tile_widget.cpp
-  src/ui/mediapipe_canvas_widget.cpp
-  src/ui/yolo_canvas_widget.cpp
   src/ui/yolo_labels.cpp
   src/ui/main_window.cpp
   src/vision_core/mediapipe_processor.cpp
@@ -81,8 +79,6 @@ set(RK_STUDIO_HEADERS
   include/rk_studio/media_core/vision_engine.h
   include/rk_studio/media_core/session_writer.h
   include/rk_studio/ui/preview_tile_widget.h
-  include/rk_studio/ui/mediapipe_canvas_widget.h
-  include/rk_studio/ui/yolo_canvas_widget.h
   include/rk_studio/ui/yolo_labels.h
   include/rk_studio/ui/main_window.h
   include/rk_studio/infra/runtime.h

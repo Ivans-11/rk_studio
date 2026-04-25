@@ -3,7 +3,6 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include <QObject>
 #include <QtGui/qwindowdefs.h>
@@ -37,7 +36,6 @@ class MediaEngine : public QObject {
   void LoadBoardConfig(const BoardConfig& board_config);
   void ApplySessionProfile(const SessionProfile& profile);
   bool StartPreview(std::string* err);
-  bool StartPreview(const std::vector<std::string>& excluded_camera_ids, std::string* err);
   bool StartRecording(std::string* err);
   bool StartRtsp(std::string* err);
   void StopPreview();
@@ -46,8 +44,6 @@ class MediaEngine : public QObject {
   void StopAll();
 
   void BindPreviewWindow(const std::string& camera_id, WId window_id);
-  void StopPreviewPipeline(const std::string& camera_id);
-  bool RestorePreviewPipeline(const std::string& camera_id, std::string* err);
   void ObserveTelemetry(const TelemetryEvent& event);
   SessionWriter* session_writer() const { return session_writer_.get(); }
   const BoardConfig& board_config() const;
@@ -62,13 +58,8 @@ class MediaEngine : public QObject {
   using CameraMap = std::map<std::string, std::unique_ptr<V4l2Pipeline>>;
 
   bool RebuildPipelines(bool recording, std::string* err);
-  bool RebuildPipelines(
-      bool recording,
-      const std::vector<std::string>& excluded_camera_ids,
-      std::string* err);
   std::unique_ptr<V4l2Pipeline> BuildOnePipeline(
       const std::string& camera_id, bool recording, std::string* err);
-  void StopOnePipeline(const std::string& camera_id);
   void StopPipelines();
   void EmitTelemetry(const TelemetryEvent& event);
   void OnCameraError(const std::string& camera_id, const std::string& reason, bool fatal);

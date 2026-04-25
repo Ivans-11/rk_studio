@@ -35,6 +35,11 @@ struct FrameRef {
   std::shared_ptr<void> owned_data;  // type-erased; keeps frame data alive
 };
 
+struct VisionFrame {
+  FrameRef rgb;
+  std::optional<FrameRef> raw;
+};
+
 struct MediapipeProcessorConfig {
   std::string detector_model;
   std::string landmark_model;

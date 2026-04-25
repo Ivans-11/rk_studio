@@ -3,8 +3,9 @@
 #include <QEvent>
 #include <QFrame>
 #include <QLabel>
-#include <QMouseEvent>
 #include <QWidget>
+
+#include "rk_studio/vision_core/vision_types.h"
 
 namespace rkstudio::ui {
 
@@ -17,6 +18,10 @@ class PreviewTileWidget : public QWidget {
   QString camera_id() const;
   WId sink_window_id();
   void SetStatusText(const QString& text);
+  void SetMediapipeResult(const vision::MediapipeResult& result);
+  void ClearMediapipeResult();
+  void SetYoloResult(const vision::YoloResult& result);
+  void ClearYoloResult();
 
  signals:
   void WindowRebound(QString camera_id, WId window_id);
@@ -31,6 +36,7 @@ class PreviewTileWidget : public QWidget {
   QLabel* title_ = nullptr;
   QLabel* status_ = nullptr;
   QFrame* sink_host_ = nullptr;
+  QWidget* overlay_ = nullptr;
 };
 
 }  // namespace rkstudio::ui

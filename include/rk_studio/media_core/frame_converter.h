@@ -1,6 +1,5 @@
 #pragma once
 
-#include <memory>
 #include <optional>
 #include <string>
 
@@ -9,16 +8,7 @@
 struct _GstSample;
 typedef struct _GstSample GstSample;
 
-namespace cv {
-class Mat;
-}  // namespace cv
-
 namespace rkstudio::media {
-
-struct ConvertedFrame {
-  vision::FrameRef frame;
-  std::shared_ptr<cv::Mat> rgb_holder;
-};
 
 class FrameConverter {
  public:
@@ -26,7 +16,7 @@ class FrameConverter {
       GstSample* sample,
       const std::string& camera_id) const;
 
-  std::optional<ConvertedFrame> ConvertToRgbFrame(
+  std::optional<vision::FrameRef> ConvertToRgbFrame(
       GstSample* sample,
       const std::string& camera_id) const;
 };

@@ -75,10 +75,6 @@ void MediaEngine::ApplySessionProfile(const SessionProfile& profile) {
 }
 
 bool MediaEngine::StartPreview(std::string* err) {
-  return StartPreview({}, err);
-}
-
-bool MediaEngine::StartPreview(const std::vector<std::string>& excluded_camera_ids, std::string* err) {
   if (board_config_.cameras.empty()) {
     if (err != nullptr) {
       *err = "board config is empty";
@@ -92,7 +88,7 @@ bool MediaEngine::StartPreview(const std::vector<std::string>& excluded_camera_i
     return false;
   }
 
-  return RebuildPipelines(false, excluded_camera_ids, err);
+  return RebuildPipelines(false, err);
 }
 
 bool MediaEngine::StartRecording(std::string* err) {
@@ -161,19 +157,6 @@ void MediaEngine::BindPreviewWindow(const std::string& camera_id, WId window_id)
   }
 }
 
-void MediaEngine::StopPreviewPipeline(const std::string& camera_id) {
-  StopOnePipeline(camera_id);
-}
-
-bool MediaEngine::RestorePreviewPipeline(const std::string& camera_id, std::string* err) {
-  auto pipeline = BuildOnePipeline(camera_id, false, err);
-  if (!pipeline || !pipeline->Start(err)) {
-    return false;
-  }
-  cameras_.insert_or_assign(camera_id, std::move(pipeline));
-  return true;
-}
-
 void MediaEngine::ObserveTelemetry(const TelemetryEvent& event) {
   EmitTelemetry(event);
 }
@@ -235,21 +218,11 @@ std::unique_ptr<V4l2Pipeline> MediaEngine::BuildOnePipeline(
 }
 
 bool MediaEngine::RebuildPipelines(bool recording, std::string* err) {
-  return RebuildPipelines(recording, {}, err);
-}
-
-bool MediaEngine::RebuildPipelines(
-    bool recording,
-    const std::vector<std::string>& excluded_camera_ids,
-    std::string* err) {
   StopPipelines();
 
   const std::vector<std::string> camera_ids =
       recording ? UnionCameraIds(session_profile_) : session_profile_.preview_cameras;
   for (const auto& camera_id : camera_ids) {
-    if (!recording && Contains(excluded_camera_ids, camera_id)) {
-      continue;
-    }
     auto pipeline = BuildOnePipeline(camera_id, recording, err);
     if (!pipeline || !pipeline->Start(err)) {
       StopPipelines();
@@ -259,13 +232,6 @@ bool MediaEngine::RebuildPipelines(
   }
 
   return true;
-}
-
-void MediaEngine::StopOnePipeline(const std::string& camera_id) {
-  if (auto it = cameras_.find(camera_id); it != cameras_.end()) {
-    it->second->Stop();
-    cameras_.erase(it);
-  }
 }
 
 void MediaEngine::StopPipelines() {

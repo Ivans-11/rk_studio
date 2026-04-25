@@ -63,9 +63,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(runtime_manager_, &runtime::RuntimeManager::StateChanged, this, &MainWindow::OnStateChanged);
   connect(runtime_manager_, &runtime::RuntimeManager::TelemetryObserved, this, &MainWindow::OnTelemetryObserved);
   connect(runtime_manager_, &runtime::RuntimeManager::PreviewCameraFailed, this, &MainWindow::OnPreviewFailure);
-  connect(runtime_manager_, &runtime::RuntimeManager::MediapipeFrameReady, this, &MainWindow::OnMediapipeFrame);
   connect(runtime_manager_, &runtime::RuntimeManager::MediapipeResultReady, this, &MainWindow::OnMediapipeResult);
-  connect(runtime_manager_, &runtime::RuntimeManager::YoloFrameReady, this, &MainWindow::OnYoloFrame);
   connect(runtime_manager_, &runtime::RuntimeManager::YoloResultReady, this, &MainWindow::OnYoloResult);
 
   if (QFileInfo::exists(board_config_path_) && QFileInfo::exists(profile_path_)) {
@@ -136,8 +134,6 @@ void MainWindow::BuildUi() {
 void MainWindow::RebuildTiles() {
   ClearLayoutWidgets(grid_container_);
   tiles_.clear();
-  mediapipe_canvas_ = nullptr;
-  yolo_canvas_ = nullptr;
 
   const auto& profile = runtime_manager_->session_profile();
   auto* grid = new QGridLayout(grid_container_);
@@ -149,24 +145,6 @@ void MainWindow::RebuildTiles() {
     const QString camera_id = QString::fromStdString(profile.preview_cameras[i]);
     const int row = static_cast<int>(i / cols);
     const int col = static_cast<int>(i % cols);
-
-    if (runtime_manager_->state() == AppState::kPreviewing &&
-        runtime_manager_->mediapipe_enabled() &&
-        profile.preview_cameras[i] == profile.selected_mediapipe_camera) {
-      auto* canvas = new MediapipeCanvasWidget(camera_id, grid_container_);
-      grid->addWidget(canvas, row, col);
-      mediapipe_canvas_ = canvas;
-      continue;
-    }
-
-    if (runtime_manager_->state() == AppState::kPreviewing &&
-        runtime_manager_->yolo_enabled() &&
-        profile.preview_cameras[i] == profile.selected_yolo_camera) {
-      auto* canvas = new YoloCanvasWidget(camera_id, grid_container_);
-      grid->addWidget(canvas, row, col);
-      yolo_canvas_ = canvas;
-      continue;
-    }
 
     auto* tile = new PreviewTileWidget(camera_id, grid_container_);
     connect(tile, &PreviewTileWidget::WindowRebound, this, &MainWindow::OnTileRebound);
@@ -346,23 +324,29 @@ void MainWindow::ToggleMediapipe() {
   const bool enabling = !runtime_manager_->mediapipe_enabled();
   mediapipe_toggle_button_->setText(enabling ? QStringLiteral("关闭 Mediapipe") : QStringLiteral("启动 Mediapipe"));
 
-  if (!enabling && runtime_manager_->state() == rkstudio::AppState::kPreviewing) {
-    SwapMediapipeTile(false);
-  }
-
   std::string err;
   if (!runtime_manager_->ToggleMediapipe(enabling, &err)) {
     QMessageBox::warning(this, QStringLiteral("Mediapipe 切换失败"), QString::fromStdString(err));
     mediapipe_toggle_button_->setText(runtime_manager_->mediapipe_enabled() ? QStringLiteral("关闭 Mediapipe")
                                                            : QStringLiteral("启动 Mediapipe"));
-    if (!enabling && runtime_manager_->state() == rkstudio::AppState::kPreviewing) {
-      SwapMediapipeTile(true);
-    }
     return;
   }
 
-  if (enabling && runtime_manager_->state() == rkstudio::AppState::kPreviewing) {
-    SwapMediapipeTile(true);
+  if (!enabling) {
+    const QString camera_id = QString::fromStdString(runtime_manager_->session_profile().selected_mediapipe_camera);
+    if (const auto it = tiles_.find(camera_id); it != tiles_.end()) {
+      it->second->ClearMediapipeResult();
+    }
+  }
+}
+
+void MainWindow::OnMediapipeResult(rkstudio::vision::MediapipeResult result) {
+  if (runtime_manager_->state() != rkstudio::AppState::kPreviewing) {
+    return;
+  }
+  const QString camera_id = QString::fromStdString(result.camera_id);
+  if (const auto it = tiles_.find(camera_id); it != tiles_.end()) {
+    it->second->SetMediapipeResult(result);
   }
 }
 
@@ -370,137 +354,28 @@ void MainWindow::ToggleYolo() {
   const bool enabling = !runtime_manager_->yolo_enabled();
   yolo_toggle_button_->setText(enabling ? QStringLiteral("关闭 YOLO") : QStringLiteral("启动 YOLO"));
 
-  if (!enabling && runtime_manager_->state() == rkstudio::AppState::kPreviewing) {
-    SwapYoloTile(false);
-  }
-
   std::string err;
   if (!runtime_manager_->ToggleYolo(enabling, &err)) {
     QMessageBox::warning(this, QStringLiteral("YOLO 切换失败"), QString::fromStdString(err));
     yolo_toggle_button_->setText(runtime_manager_->yolo_enabled() ? QStringLiteral("关闭 YOLO")
                                                                : QStringLiteral("启动 YOLO"));
-    if (!enabling && runtime_manager_->state() == rkstudio::AppState::kPreviewing) {
-      SwapYoloTile(true);
-    }
     return;
   }
 
-  if (enabling && runtime_manager_->state() == rkstudio::AppState::kPreviewing) {
-    SwapYoloTile(true);
-  }
-}
-
-void MainWindow::SwapMediapipeTile(bool enabling) {
-  const auto& profile = runtime_manager_->session_profile();
-  const QString mediapipe_cam = QString::fromStdString(profile.selected_mediapipe_camera);
-  if (mediapipe_cam.isEmpty()) return;
-
-  QGridLayout* grid = qobject_cast<QGridLayout*>(grid_container_->layout());
-  if (!grid) return;
-
-  const int cols = std::max(1, profile.preview_cols);
-  int target_row = -1;
-  int target_col = -1;
-  for (size_t i = 0; i < profile.preview_cameras.size(); ++i) {
-    if (profile.preview_cameras[i] == profile.selected_mediapipe_camera) {
-      target_row = static_cast<int>(i / cols);
-      target_col = static_cast<int>(i % cols);
-      break;
+  if (!enabling) {
+    const QString camera_id = QString::fromStdString(runtime_manager_->session_profile().selected_yolo_camera);
+    if (const auto it = tiles_.find(camera_id); it != tiles_.end()) {
+      it->second->ClearYoloResult();
     }
-  }
-  if (target_row < 0) return;
-
-  if (QLayoutItem* item = grid->itemAtPosition(target_row, target_col)) {
-    if (QWidget* old_widget = item->widget()) {
-      grid->removeWidget(old_widget);
-      old_widget->setParent(nullptr);
-      delete old_widget;
-    }
-  }
-
-  tiles_.erase(mediapipe_cam);
-  mediapipe_canvas_ = nullptr;
-
-  if (enabling) {
-    auto* canvas = new MediapipeCanvasWidget(mediapipe_cam, grid_container_);
-    grid->addWidget(canvas, target_row, target_col);
-    mediapipe_canvas_ = canvas;
-  } else {
-    auto* tile = new PreviewTileWidget(mediapipe_cam, grid_container_);
-    connect(tile, &PreviewTileWidget::WindowRebound, this, &MainWindow::OnTileRebound);
-    grid->addWidget(tile, target_row, target_col);
-    tiles_.insert_or_assign(mediapipe_cam, tile);
-    runtime_manager_->BindPreviewWindow(profile.selected_mediapipe_camera, tile->sink_window_id());
-  }
-}
-
-void MainWindow::OnMediapipeFrame(QString camera_id, QImage image) {
-  (void)camera_id;
-  if (mediapipe_canvas_) {
-    mediapipe_canvas_->SetFrame(image);
-  }
-}
-
-void MainWindow::OnMediapipeResult(rkstudio::vision::MediapipeResult result) {
-  if (mediapipe_canvas_) {
-    mediapipe_canvas_->SetResult(result);
-  }
-}
-
-void MainWindow::SwapYoloTile(bool enabling) {
-  const auto& profile = runtime_manager_->session_profile();
-  const QString yolo_cam = QString::fromStdString(profile.selected_yolo_camera);
-  if (yolo_cam.isEmpty()) return;
-
-  QGridLayout* grid = qobject_cast<QGridLayout*>(grid_container_->layout());
-  if (!grid) return;
-
-  const int cols = std::max(1, profile.preview_cols);
-  int target_row = -1;
-  int target_col = -1;
-  for (size_t i = 0; i < profile.preview_cameras.size(); ++i) {
-    if (profile.preview_cameras[i] == profile.selected_yolo_camera) {
-      target_row = static_cast<int>(i / cols);
-      target_col = static_cast<int>(i % cols);
-      break;
-    }
-  }
-  if (target_row < 0) return;
-
-  if (QLayoutItem* item = grid->itemAtPosition(target_row, target_col)) {
-    if (QWidget* old_widget = item->widget()) {
-      grid->removeWidget(old_widget);
-      old_widget->setParent(nullptr);
-      delete old_widget;
-    }
-  }
-
-  tiles_.erase(yolo_cam);
-  yolo_canvas_ = nullptr;
-
-  if (enabling) {
-    auto* canvas = new YoloCanvasWidget(yolo_cam, grid_container_);
-    grid->addWidget(canvas, target_row, target_col);
-    yolo_canvas_ = canvas;
-  } else {
-    auto* tile = new PreviewTileWidget(yolo_cam, grid_container_);
-    connect(tile, &PreviewTileWidget::WindowRebound, this, &MainWindow::OnTileRebound);
-    grid->addWidget(tile, target_row, target_col);
-    tiles_.insert_or_assign(yolo_cam, tile);
-    runtime_manager_->BindPreviewWindow(profile.selected_yolo_camera, tile->sink_window_id());
-  }
-}
-
-void MainWindow::OnYoloFrame(QString camera_id, QImage image) {
-  (void)camera_id;
-  if (yolo_canvas_) {
-    yolo_canvas_->SetFrame(image);
   }
 }
 
 void MainWindow::OnYoloResult(rkstudio::vision::YoloResult result) {
-  if (yolo_canvas_) {
-    yolo_canvas_->SetResult(result);
+  if (runtime_manager_->state() == rkstudio::AppState::kPreviewing) {
+    const QString camera_id = QString::fromStdString(result.camera_id);
+    if (const auto it = tiles_.find(camera_id); it != tiles_.end()) {
+      it->second->SetYoloResult(result);
+    }
   }
 
   if (!result.ok) {
