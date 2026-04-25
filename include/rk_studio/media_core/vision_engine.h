@@ -12,6 +12,7 @@
 #include <QTimer>
 
 #include "rk_studio/domain/types.h"
+#include "rk_studio/media_core/frame_converter.h"
 #include "rk_studio/vision_core/vision_types.h"
 
 #ifndef Q_MOC_RUN
@@ -97,6 +98,7 @@ class VisionEngine : public QObject {
   SessionWriter* session_writer_ = nullptr;
   Callbacks callbacks_;
   PreviewControls preview_controls_;
+  FrameConverter frame_converter_;
 
   std::unique_ptr<V4l2Pipeline> mediapipe_pipeline_;
   std::unique_ptr<rkstudio::vision::IMediapipeProcessor> mediapipe_processor_;

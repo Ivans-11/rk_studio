@@ -5,18 +5,13 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
-#include <optional>
 #include <sstream>
 #include <utility>
 
-#include <gst/allocators/gstdmabuf.h>
 #include <gst/gst.h>
-#include <gst/video/video.h>
 #include <QMetaObject>
+#include <opencv2/core/mat.hpp>
 
-#include <opencv2/imgproc.hpp>
-
-#include "mediapipe/preprocess/hw_preprocess.h"
 #include "rk_studio/infra/runtime.h"
 #include "rk_studio/infra/session_files.h"
 #include "rk_studio/media_core/session_writer.h"
@@ -45,44 +40,19 @@ std::string DeriveSelfpathDevice(const std::string& mainpath_device, std::string
   return prefix + std::to_string(std::stoi(number) + 1);
 }
 
-int ExtractDmabufFd(GstBuffer* buffer) {
-  GstMemory* mem = gst_buffer_peek_memory(buffer, 0);
-  if (mem != nullptr && gst_is_dmabuf_memory(mem)) {
-    return gst_dmabuf_memory_get_fd(mem);
-  }
-  return -1;
-}
-
-struct RgbFrameFromSample {
-  vision::FrameRef frame;
-  std::shared_ptr<cv::Mat> rgb_holder;
-};
-
-std::optional<RgbFrameFromSample> BuildRgbFrameFromSample(
+bool ShouldSubmitSample(
     GstSample* sample,
-    const std::string& camera_id,
     uint64_t submit_interval_ns,
-    std::atomic<uint64_t>* last_submit_ns,
-    const char* log_tag,
-    bool* logged_path) {
-  if (sample == nullptr || camera_id.empty() || last_submit_ns == nullptr) {
-    return std::nullopt;
+    std::atomic<uint64_t>* last_submit_ns) {
+  if (sample == nullptr || last_submit_ns == nullptr) {
+    return false;
   }
 
   GstBuffer* buffer = gst_sample_get_buffer(sample);
-  GstCaps* caps = gst_sample_get_caps(sample);
-  if (!buffer || !caps) {
-    return std::nullopt;
+  if (!buffer) {
+    return false;
   }
 
-  GstVideoInfo info;
-  if (!gst_video_info_from_caps(&info, caps)) {
-    return std::nullopt;
-  }
-
-  const int w = GST_VIDEO_INFO_WIDTH(&info);
-  const int h = GST_VIDEO_INFO_HEIGHT(&info);
-  const int stride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 0);
   const uint64_t pts_ns = GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer))
                               ? GST_BUFFER_PTS(buffer) : 0;
   const uint64_t throttle_ns = pts_ns != 0 ? pts_ns : rkinfra::ClockMonotonicNs();
@@ -90,51 +60,10 @@ std::optional<RgbFrameFromSample> BuildRgbFrameFromSample(
   if (previous_submit_ns != 0 &&
       throttle_ns > previous_submit_ns &&
       throttle_ns - previous_submit_ns < submit_interval_ns) {
-    return std::nullopt;
+    return false;
   }
   last_submit_ns->store(throttle_ns);
-
-  cv::Mat rgb;
-  bool rga_ok = false;
-  const int fd = ExtractDmabufFd(buffer);
-  if (fd >= 0) {
-    rga_ok = mediapipe_demo::ConvertNv12ToRgb(fd, w, h, stride, &rgb);
-  }
-
-  if (logged_path != nullptr && !*logged_path) {
-    std::cerr << "[" << log_tag << "] NV12->RGB path: "
-              << (rga_ok ? "RGA hardware" : "CPU fallback") << "\n";
-    *logged_path = true;
-  }
-
-  if (!rga_ok) {
-    GstMapInfo map{};
-    if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
-      return std::nullopt;
-    }
-    if (w > 0 && h > 0 && map.size >= static_cast<size_t>(stride) * h * 3 / 2) {
-      cv::Mat nv12(h * 3 / 2, w, CV_8UC1, map.data, stride);
-      cv::cvtColor(nv12, rgb, cv::COLOR_YUV2RGB_NV12);
-    }
-    gst_buffer_unmap(buffer, &map);
-  }
-  if (rgb.empty()) {
-    return std::nullopt;
-  }
-
-  auto rgb_holder = std::make_shared<cv::Mat>(std::move(rgb));
-  RgbFrameFromSample output;
-  output.rgb_holder = rgb_holder;
-  output.frame.camera_id = camera_id;
-  output.frame.pts_ns = pts_ns;
-  output.frame.width = w;
-  output.frame.height = h;
-  output.frame.stride = static_cast<int>(rgb_holder->step[0]);
-  output.frame.pixel_format = vision::PixelFormat::kRgb;
-  output.frame.mapped_ptr = rgb_holder->data;
-  output.frame.bytes_used = rgb_holder->total() * rgb_holder->elemSize();
-  output.frame.owned_data = rgb_holder;
-  return output;
+  return true;
 }
 
 std::string MediapipeResultToJson(const rkstudio::vision::MediapipeResult& r) {
@@ -490,11 +419,19 @@ void VisionEngine::OnMediapipeSample(GstSample* sample) {
     std::lock_guard<std::mutex> lock(mediapipe_frame_mu_);
     camera_id = mediapipe_camera_id_;
   }
-  auto frame = BuildRgbFrameFromSample(sample, camera_id, kMediapipeSubmitIntervalNs,
-                                       &last_mediapipe_submit_ns_, "mediapipe",
-                                       &mediapipe_logged_path_);
+  if (!ShouldSubmitSample(sample, kMediapipeSubmitIntervalNs, &last_mediapipe_submit_ns_)) {
+    return;
+  }
+
+  auto frame = frame_converter_.ConvertNv12SampleToRgbFrame(sample, camera_id);
   if (!frame.has_value()) {
     return;
+  }
+
+  if (!mediapipe_logged_path_) {
+    std::cerr << "[mediapipe] NV12->RGB path: "
+              << (frame->used_rga ? "RGA hardware" : "CPU fallback") << "\n";
+    mediapipe_logged_path_ = true;
   }
 
   mediapipe_processor_->Submit(frame->frame);
@@ -617,10 +554,19 @@ void VisionEngine::OnYoloSample(GstSample* sample) {
   const uint64_t interval_ns = board_config_.yolo.has_value() && board_config_.yolo->fps > 0
                                    ? 1'000'000'000ULL / static_cast<uint64_t>(board_config_.yolo->fps)
                                    : kDefaultYoloSubmitIntervalNs;
-  auto frame = BuildRgbFrameFromSample(sample, camera_id, interval_ns,
-                                       &last_yolo_submit_ns_, "yolo", &yolo_logged_path_);
+  if (!ShouldSubmitSample(sample, interval_ns, &last_yolo_submit_ns_)) {
+    return;
+  }
+
+  auto frame = frame_converter_.ConvertNv12SampleToRgbFrame(sample, camera_id);
   if (!frame.has_value()) {
     return;
+  }
+
+  if (!yolo_logged_path_) {
+    std::cerr << "[yolo] NV12->RGB path: "
+              << (frame->used_rga ? "RGA hardware" : "CPU fallback") << "\n";
+    yolo_logged_path_ = true;
   }
 
   yolo_processor_->Submit(frame->frame);
