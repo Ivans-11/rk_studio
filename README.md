@@ -176,7 +176,7 @@ max_detections = 50
 5. 点击「启动录制」— 开始录像 + 录音
 6. 点击「启动 RTSP」— 推流到 `rtsp://<ip>:8554/cam`
 
-预览、录制、RTSP 三种模式互斥。
+预览、录制、RTSP 三种模式互斥。Mediapipe/YOLO 需要在录制前开启；进入录制后功能组合会冻结，只允许停止录制。
 
 ## 输出文件
 
@@ -190,5 +190,6 @@ records/rk_studio-20260416-143000/
 ├── session.meta.json    # 会话元信息
 ├── session.sync.json    # 多路同步分析
 ├── studio.events.jsonl  # 遥测事件流
-└── mediapipe.hand.jsonl        # Mediapipe 推理结果
+├── mediapipe.hand.jsonl # Mediapipe 推理结果
+└── yolo.objects.jsonl   # YOLO 物体检测结果
 ```

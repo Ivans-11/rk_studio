@@ -165,14 +165,22 @@ void RuntimeManager::BindPreviewWindow(const std::string& camera_id, WId window_
 }
 
 bool RuntimeManager::ToggleMediapipe(bool enable, std::string* err) {
+  if (state_ == AppState::kRecording) {
+    if (err) *err = "cannot change Mediapipe while recording";
+    return false;
+  }
   vision_engine_->SetState(state_);
-  vision_engine_->SetSessionWriter(state_ == AppState::kRecording ? media_engine_->session_writer() : nullptr);
+  vision_engine_->SetSessionWriter(nullptr);
   return vision_engine_->ToggleMediapipe(enable, err);
 }
 
 bool RuntimeManager::ToggleYolo(bool enable, std::string* err) {
+  if (state_ == AppState::kRecording) {
+    if (err) *err = "cannot change YOLO while recording";
+    return false;
+  }
   vision_engine_->SetState(state_);
-  vision_engine_->SetSessionWriter(state_ == AppState::kRecording ? media_engine_->session_writer() : nullptr);
+  vision_engine_->SetSessionWriter(nullptr);
   return vision_engine_->ToggleYolo(enable, err);
 }
 

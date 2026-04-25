@@ -1,9 +1,9 @@
-#include "rk_studio/ui/yolo_labels.h"
+#include "rk_studio/vision_core/coco_labels.h"
 
 #include <array>
 #include <cstddef>
 
-namespace rkstudio::ui {
+namespace rkstudio::vision {
 
 const char* CocoLabel(int class_id) {
   static constexpr std::array<const char*, 80> kLabels = {
@@ -26,4 +26,4 @@ const char* CocoLabel(int class_id) {
   return kLabels[static_cast<size_t>(class_id)];
 }
 
-}  // namespace rkstudio::ui
+}  // namespace rkstudio::vision

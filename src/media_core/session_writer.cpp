@@ -177,6 +177,27 @@ void SessionWriter::WriteMediapipeLine(const std::string& line) {
   }
 }
 
+bool SessionWriter::OpenYoloWriter(std::string* err) {
+  if (!session_paths_) {
+    if (err) *err = "session not initialized";
+    return false;
+  }
+  yolo_writer_ = std::make_unique<JsonlFileWriter>();
+  std::string yolo_err;
+  if (!yolo_writer_->Open(session_paths_->session_dir / "yolo.objects.jsonl", &yolo_err)) {
+    std::cerr << "[yolo] failed to open yolo.objects.jsonl: " << yolo_err << "\n";
+    yolo_writer_.reset();
+    return false;
+  }
+  return true;
+}
+
+void SessionWriter::WriteYoloLine(const std::string& line) {
+  if (yolo_writer_) {
+    yolo_writer_->WriteLine(line);
+  }
+}
+
 void SessionWriter::WriteStartMeta(const std::vector<rkinfra::OutputStreamInfo>& outputs) {
   if (session_paths_ && recording_config_) {
     rkinfra::WriteSessionMeta(*session_paths_, *recording_config_, "starting", recording_started_utc_,
@@ -196,6 +217,7 @@ void SessionWriter::Finalize(bool ok, const std::vector<rkinfra::OutputStreamInf
 
   telemetry_sink_.reset();
   mediapipe_writer_.reset();
+  yolo_writer_.reset();
   recording_config_.reset();
   session_paths_.reset();
   session_artifacts_.reset();

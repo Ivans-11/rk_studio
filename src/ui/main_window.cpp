@@ -14,7 +14,7 @@
 #include <QVBoxLayout>
 
 #include "rk_studio/domain/config.h"
-#include "rk_studio/ui/yolo_labels.h"
+#include "rk_studio/vision_core/coco_labels.h"
 
 namespace rkstudio::ui {
 namespace {
@@ -256,8 +256,8 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         {}, false,
         QStringLiteral("停止录制"), true,
         {}, false,
-        true,
-        true};
+        false,
+        false};
     t[rkstudio::AppState::kStreaming] = {
         "Streaming",
         {}, false,
@@ -397,7 +397,7 @@ void MainWindow::OnYoloResult(rkstudio::vision::YoloResult result) {
   const int limit = std::min<int>(3, result.detections.size());
   for (int i = 0; i < limit; ++i) {
     const auto& det = result.detections[static_cast<size_t>(i)];
-    const char* class_name = CocoLabel(det.class_id);
+    const char* class_name = vision::CocoLabel(det.class_id);
     top << QString("%1 %.2f [%2,%3,%4,%5]")
                .arg(class_name != nullptr
                         ? QString::fromLatin1(class_name)

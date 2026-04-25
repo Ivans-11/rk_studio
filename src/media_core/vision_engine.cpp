@@ -14,6 +14,7 @@
 #include "rk_studio/infra/runtime.h"
 #include "rk_studio/infra/session_files.h"
 #include "rk_studio/media_core/session_writer.h"
+#include "rk_studio/vision_core/coco_labels.h"
 #include "rk_studio/vision_core/vision_processor.h"
 
 namespace rkstudio::media {
@@ -43,42 +44,41 @@ std::string MediapipeResultToJson(const rkstudio::vision::MediapipeResult& r) {
   std::ostringstream o;
   o << "{\"camera_id\":\"" << rkinfra::JsonEscape(r.camera_id)
     << "\",\"pts_ns\":" << r.pts_ns
-    << ",\"frame_width\":" << r.frame_width
-    << ",\"frame_height\":" << r.frame_height
+    << ",\"size\":[" << r.frame_width << ',' << r.frame_height << ']'
     << ",\"hands\":[";
   for (size_t h = 0; h < r.hands.size(); ++h) {
     if (h > 0) o << ',';
     const auto& hand = r.hands[h];
-    o << "{\"hand_id\":" << hand.hand_id;
-    if (hand.roi.has_value()) {
-      o << ",\"roi\":[" << hand.roi->x1 << ',' << hand.roi->y1
-        << ',' << hand.roi->x2 << ',' << hand.roi->y2 << ']';
+    o << "{\"id\":" << hand.hand_id << ",\"landmarks\":[";
+    for (size_t i = 0; i < hand.landmarks.size(); ++i) {
+      if (i > 0) o << ',';
+      o << '[' << hand.landmarks[i].x << ',' << hand.landmarks[i].y
+        << ',' << hand.landmarks[i].z << ']';
     }
-    if (!hand.landmarks.empty()) {
-      o << ",\"landmarks\":[";
-      for (size_t i = 0; i < hand.landmarks.size(); ++i) {
-        if (i > 0) o << ',';
-        o << '[' << hand.landmarks[i].x << ',' << hand.landmarks[i].y
-          << ',' << hand.landmarks[i].z << ']';
-      }
-      o << ']';
-    }
-    const char* mode_str = "no_hand";
-    switch (hand.tracking_mode) {
-      case rkstudio::vision::TrackingMode::kDetect: mode_str = "detect"; break;
-      case rkstudio::vision::TrackingMode::kTrack: mode_str = "track"; break;
-      case rkstudio::vision::TrackingMode::kRecover: mode_str = "recover"; break;
-      default: break;
-    }
-    o << ",\"tracking_mode\":\"" << mode_str
-      << "\",\"motion_norm\":" << hand.motion_norm << '}';
+    o << "]}";
   }
-  o << "],\"fps\":" << r.fps
-    << ",\"ok\":" << (r.ok ? "true" : "false");
-  if (!r.error.empty()) {
-    o << ",\"error\":\"" << rkinfra::JsonEscape(r.error) << '"';
+  o << "]}";
+  return o.str();
+}
+
+std::string YoloResultToJson(const rkstudio::vision::YoloResult& r) {
+  std::ostringstream o;
+  o << "{\"camera_id\":\"" << rkinfra::JsonEscape(r.camera_id)
+    << "\",\"pts_ns\":" << r.pts_ns
+    << ",\"size\":[" << r.frame_width << ',' << r.frame_height << ']'
+    << ",\"objects\":[";
+  for (size_t i = 0; i < r.detections.size(); ++i) {
+    if (i > 0) o << ',';
+    const auto& det = r.detections[i];
+    o << "{\"class_id\":" << det.class_id;
+    if (const char* label = rkstudio::vision::CocoLabel(det.class_id)) {
+      o << ",\"class_name\":\"" << rkinfra::JsonEscape(label) << '"';
+    }
+    o << ",\"score\":" << det.score
+      << ",\"box\":[" << det.box.x1 << ',' << det.box.y1
+      << ',' << det.box.x2 << ',' << det.box.y2 << "]}";
   }
-  o << '}';
+  o << "]}";
   return o.str();
 }
 
@@ -149,6 +149,9 @@ bool VisionEngine::ToggleMediapipe(bool enable, std::string* err) {
         return false;
       }
     }
+    if (session_writer_ && session_writer_->session_paths()) {
+      session_writer_->OpenMediapipeWriter(nullptr);
+    }
   } else {
     mediapipe_poll_timer_->stop();
     StopMediapipePipeline();
@@ -188,6 +191,9 @@ bool VisionEngine::ToggleYolo(bool enable, std::string* err) {
       }
     }
     if (yolo_processor_) {
+      if (session_writer_ && session_writer_->session_paths()) {
+        session_writer_->OpenYoloWriter(nullptr);
+      }
       yolo_poll_timer_->start();
     }
   } else {
@@ -203,6 +209,9 @@ bool VisionEngine::SyncForState(AppState state, std::string* err) {
 
   if (mediapipe_processor_ && session_writer_ && session_writer_->session_paths()) {
     session_writer_->OpenMediapipeWriter(nullptr);
+  }
+  if (yolo_processor_ && session_writer_ && session_writer_->session_paths()) {
+    session_writer_->OpenYoloWriter(nullptr);
   }
   if (mediapipe_processor_) {
     if (!mediapipe_pipeline_) {
@@ -399,7 +408,7 @@ void VisionEngine::PollMediapipeResults() {
   }
 
   while (auto result = mediapipe_processor_->PollResult()) {
-    if (session_writer_) {
+    if (session_writer_ && result->ok) {
       session_writer_->WriteMediapipeLine(MediapipeResultToJson(*result));
     }
 
@@ -514,6 +523,9 @@ void VisionEngine::PollYoloResults() {
     return;
   }
   while (auto result = yolo_processor_->PollResult()) {
+    if (session_writer_ && result->ok) {
+      session_writer_->WriteYoloLine(YoloResultToJson(*result));
+    }
     emit YoloResultReady(*result);
   }
 }

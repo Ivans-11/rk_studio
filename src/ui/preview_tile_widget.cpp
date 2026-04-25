@@ -10,7 +10,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
-#include "rk_studio/ui/yolo_labels.h"
+#include "rk_studio/vision_core/coco_labels.h"
 
 namespace rkstudio::ui {
 namespace {
@@ -124,7 +124,7 @@ class ResultOverlayWidget final : public QWidget {
       painter.setBrush(Qt::NoBrush);
       painter.drawRect(normalized);
 
-      const char* class_name = CocoLabel(det.class_id);
+      const char* class_name = vision::CocoLabel(det.class_id);
       const QString label = class_name != nullptr
                                 ? QString("%1  %2").arg(QString::fromLatin1(class_name)).arg(det.score, 0, 'f', 2)
                                 : QString("#%1  %2").arg(det.class_id).arg(det.score, 0, 'f', 2);
