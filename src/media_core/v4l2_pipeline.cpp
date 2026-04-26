@@ -26,32 +26,10 @@ struct GstUnrefDeleter {
   }
 };
 
-GstCaps* MakeSourceCaps(const V4l2Pipeline::SourceOptions& source, bool include_framerate) {
-  if (rkinfra::IsJpegLikeFormat(source.input_format)) {
-    GstCaps* caps = gst_caps_new_simple("image/jpeg", "width", G_TYPE_INT, source.width,
-                                        "height", G_TYPE_INT, source.height, nullptr);
-    if (include_framerate) {
-      gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, source.fps, 1, nullptr);
-    }
-    return caps;
-  }
-  GstCaps* caps = gst_caps_new_simple("video/x-raw", "width", G_TYPE_INT, source.width,
-                                      "height", G_TYPE_INT, source.height, "format",
-                                      G_TYPE_STRING, source.input_format.c_str(), nullptr);
-  if (include_framerate) {
-    gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, source.fps, 1, nullptr);
-  }
-  return caps;
-}
-
-GstCaps* MakeNormalizedCaps(const V4l2Pipeline::SourceOptions& source, bool include_framerate) {
-  GstCaps* caps = gst_caps_new_simple("video/x-raw", "width", G_TYPE_INT, source.width,
-                                      "height", G_TYPE_INT, source.height, "format",
-                                      G_TYPE_STRING, "NV12", nullptr);
-  if (include_framerate) {
-    gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, source.fps, 1, nullptr);
-  }
-  return caps;
+GstCaps* MakeSourceCaps(const V4l2Pipeline::SourceOptions& source) {
+  return gst_caps_new_simple("video/x-raw", "width", G_TYPE_INT, source.width,
+                             "height", G_TYPE_INT, source.height, "format",
+                             G_TYPE_STRING, "NV12", nullptr);
 }
 
 GstCaps* MakeRateCaps(const V4l2Pipeline::SourceOptions& source) {
@@ -113,21 +91,27 @@ bool V4l2Pipeline::Build(const BuildOptions& options,
 }
 
 bool V4l2Pipeline::BuildPipeline(std::string* err) {
-  const bool jpeg_input = rkinfra::IsJpegLikeFormat(options_.source.input_format);
-  const bool nv12_input = rkinfra::IsNv12Format(options_.source.input_format);
-  const bool needs_normalize = jpeg_input || !nv12_input;
+  if (!rkinfra::IsNv12Format(options_.source.input_format)) {
+    if (err != nullptr) {
+      *err = "V4l2Pipeline only supports NV12 input for " + options_.source.id;
+    }
+    return false;
+  }
+
+  const int branch_count = (options_.preview.enabled ? 1 : 0) +
+                           (options_.record.enabled ? 1 : 0) +
+                           (options_.app_sink.enabled ? 1 : 0);
+  if (branch_count != 1) {
+    if (err != nullptr) {
+      *err = "V4l2Pipeline expects exactly one branch for " + options_.source.id;
+    }
+    return false;
+  }
 
   pipeline_ = gst_pipeline_new(("rk-studio-" + options_.source.id).c_str());
   source_ = gst_element_factory_make("v4l2src", ("source_" + options_.source.id).c_str());
   source_caps_ = gst_element_factory_make("capsfilter", ("source_caps_" + options_.source.id).c_str());
 
-  if (needs_normalize) {
-    if (jpeg_input) {
-      jpeg_decoder_ = gst_element_factory_make("jpegdec", ("jpegdec_" + options_.source.id).c_str());
-    }
-    normalize_convert_ = gst_element_factory_make("videoconvert", ("normalize_convert_" + options_.source.id).c_str());
-    normalize_caps_ = gst_element_factory_make("capsfilter", ("normalize_caps_" + options_.source.id).c_str());
-  }
   rate_filter_ = gst_element_factory_make("videorate", ("videorate_" + options_.source.id).c_str());
   rate_caps_ = gst_element_factory_make("capsfilter", ("rate_caps_" + options_.source.id).c_str());
 
@@ -150,31 +134,11 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
     record_sink_ = gst_element_factory_make("filesink", ("record_sink_" + options_.source.id).c_str());
   }
 
-  // tee is needed when more than one output branch is active.
-  const int branch_count = (options_.preview.enabled ? 1 : 0) +
-                           (options_.record.enabled ? 1 : 0) +
-                           (options_.app_sink.enabled ? 1 : 0);
-  const bool needs_tee = branch_count > 1;
-  if (needs_tee) {
-    tee_ = gst_element_factory_make("tee", ("tee_" + options_.source.id).c_str());
-    if (options_.record.enabled) {
-      record_queue_ = gst_element_factory_make("queue", ("record_queue_" + options_.source.id).c_str());
-    }
-    if (options_.preview.enabled) {
-      preview_queue_ = gst_element_factory_make("queue", ("preview_queue_" + options_.source.id).c_str());
-    }
-  }
-
   if (!pipeline_ || !source_ || !source_caps_ ||
       !rate_filter_ || !rate_caps_ ||
-      (needs_normalize && !normalize_convert_) ||
-      (needs_normalize && !normalize_caps_) || (jpeg_input && !jpeg_decoder_) ||
       (options_.preview.enabled && (!preview_convert_ || !preview_sink_)) ||
       (options_.record.enabled && (!encoder_ || !parser_ || !mux_ || !record_sink_)) ||
-      (options_.app_sink.enabled && (!appsink_queue_ || !app_sink_)) ||
-      (needs_tee && !tee_) ||
-      (needs_tee && options_.record.enabled && !record_queue_) ||
-      (needs_tee && options_.preview.enabled && !preview_queue_)) {
+      (options_.app_sink.enabled && (!appsink_queue_ || !app_sink_))) {
     if (err != nullptr) {
       *err = "failed to create camera pipeline elements for " + options_.source.id;
     }
@@ -193,15 +157,10 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
   }
   rkinfra::SetPropertyIfExists(source_, "io-mode", io_mode);
 
-  GstCaps* source_caps = MakeSourceCaps(options_.source, false);
+  GstCaps* source_caps = MakeSourceCaps(options_.source);
   g_object_set(G_OBJECT(source_caps_), "caps", source_caps, nullptr);
   gst_caps_unref(source_caps);
 
-  if (needs_normalize) {
-    GstCaps* normalize_caps = MakeNormalizedCaps(options_.source, false);
-    g_object_set(G_OBJECT(normalize_caps_), "caps", normalize_caps, nullptr);
-    gst_caps_unref(normalize_caps);
-  }
   rkinfra::SetPropertyIfExists(rate_filter_, "drop-only", TRUE);
   GstCaps* rate_caps = MakeRateCaps(options_.source);
   g_object_set(G_OBJECT(rate_caps_), "caps", rate_caps, nullptr);
@@ -220,17 +179,6 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
     gst_app_sink_set_callbacks(GST_APP_SINK(app_sink_), &callbacks, this, nullptr);
   }
 
-  if (needs_tee) {
-    if (record_queue_) {
-      g_object_set(G_OBJECT(record_queue_), "leaky", kQueueLeakyDownstream, "max-size-buffers", 0u,
-                   "max-size-bytes", 0u, "max-size-time", static_cast<guint64>(2'000'000'000ULL), nullptr);
-    }
-    if (preview_queue_) {
-      g_object_set(G_OBJECT(preview_queue_), "leaky", kQueueLeakyDownstream, "max-size-buffers", 2u,
-                   "max-size-bytes", 0u, "max-size-time", static_cast<guint64>(0), nullptr);
-    }
-  }
-
   if (options_.record.enabled) {
     rkinfra::SetPropertyIfExists(encoder_, "bps", static_cast<guint>(options_.source.bitrate));
     rkinfra::SetPropertyIfExists(encoder_, "gop", options_.record.gop);
@@ -240,45 +188,21 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
 
   // Add elements to pipeline.
   gst_bin_add_many(GST_BIN(pipeline_), source_, source_caps_, nullptr);
-  if (jpeg_decoder_ != nullptr) {
-    gst_bin_add(GST_BIN(pipeline_), jpeg_decoder_);
-  }
-  if (normalize_convert_ != nullptr) {
-    gst_bin_add_many(GST_BIN(pipeline_), normalize_convert_, normalize_caps_, nullptr);
-  }
   gst_bin_add_many(GST_BIN(pipeline_), rate_filter_, rate_caps_, nullptr);
   if (options_.preview.enabled) {
     gst_bin_add_many(GST_BIN(pipeline_), preview_convert_, preview_sink_, nullptr);
-    if (preview_queue_) {
-      gst_bin_add(GST_BIN(pipeline_), preview_queue_);
-    }
   }
   if (options_.app_sink.enabled) {
     gst_bin_add_many(GST_BIN(pipeline_), appsink_queue_, app_sink_, nullptr);
-  }
-  if (needs_tee) {
-    gst_bin_add(GST_BIN(pipeline_), tee_);
-    if (record_queue_) {
-      gst_bin_add(GST_BIN(pipeline_), record_queue_);
-    }
   }
   if (options_.record.enabled) {
     gst_bin_add_many(GST_BIN(pipeline_), encoder_, parser_, mux_, record_sink_, nullptr);
   }
 
-  // Link source chain: v4l2src → capsfilter → [normalize]
+  // Link source chain: v4l2src -> capsfilter -> videorate -> rate caps.
   // source_tail tracks the last element in the source chain for linking the output branch.
   GstElement* source_tail = nullptr;
-  bool link_ok = false;
-  if (jpeg_input) {
-    link_ok = gst_element_link_many(source_, source_caps_, jpeg_decoder_, normalize_convert_, normalize_caps_,
-                                    rate_filter_, rate_caps_, nullptr);
-  } else if (needs_normalize) {
-    link_ok = gst_element_link_many(source_, source_caps_, normalize_convert_, normalize_caps_,
-                                    rate_filter_, rate_caps_, nullptr);
-  } else {
-    link_ok = gst_element_link_many(source_, source_caps_, rate_filter_, rate_caps_, nullptr);
-  }
+  const bool link_ok = gst_element_link_many(source_, source_caps_, rate_filter_, rate_caps_, nullptr);
   source_tail = rate_caps_;
   if (!link_ok) {
     if (err != nullptr) {
@@ -287,26 +211,7 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
     return false;
   }
 
-  // --- Link output branches ---
-
-  auto LinkTeeBranch = [&](GstElement* sink_element, const char* label) -> bool {
-    GstPad* tee_src = gst_element_get_request_pad(tee_, "src_%u");
-    GstPad* branch_sink = gst_element_get_static_pad(sink_element, "sink");
-    const bool ok = tee_src && branch_sink &&
-                    gst_pad_link(tee_src, branch_sink) == GST_PAD_LINK_OK;
-    if (branch_sink) gst_object_unref(branch_sink);
-    if (tee_src) gst_object_unref(tee_src);
-    if (!ok && err != nullptr) {
-      *err = std::string("failed to link tee → ") + label + " for " + options_.source.id;
-    }
-    return ok;
-  };
-
   auto LinkRecordChain = [&]() -> bool {
-    if (record_queue_ && !gst_element_link(record_queue_, encoder_)) {
-      if (err) *err = "failed to link record_queue → encoder for " + options_.source.id;
-      return false;
-    }
     if (!gst_element_link_many(encoder_, parser_, nullptr) || !gst_element_link(mux_, record_sink_)) {
       if (err) *err = "failed to link record chain for " + options_.source.id;
       return false;
@@ -324,10 +229,6 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
   };
 
   auto LinkPreviewChain = [&]() -> bool {
-    if (preview_queue_ && !gst_element_link(preview_queue_, preview_convert_)) {
-      if (err) *err = "failed to link preview_queue → convert for " + options_.source.id;
-      return false;
-    }
     if (!gst_element_link(preview_convert_, preview_sink_)) {
       if (err) *err = "failed to link preview chain for " + options_.source.id;
       return false;
@@ -335,26 +236,7 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
     return true;
   };
 
-  if (needs_tee) {
-    if (!gst_element_link(source_tail, tee_)) {
-      if (err) *err = "failed to link source → tee for " + options_.source.id;
-      return false;
-    }
-    if (options_.record.enabled) {
-      GstElement* record_entry = record_queue_ ? record_queue_ : encoder_;
-      if (!LinkTeeBranch(record_entry, "record") || !LinkRecordChain()) return false;
-    }
-    if (options_.preview.enabled) {
-      GstElement* preview_entry = preview_queue_ ? preview_queue_ : preview_convert_;
-      if (!LinkTeeBranch(preview_entry, "preview") || !LinkPreviewChain()) return false;
-    }
-    if (options_.app_sink.enabled) {
-      if (!LinkTeeBranch(appsink_queue_, "appsink") || !gst_element_link(appsink_queue_, app_sink_)) {
-        if (err) *err = "failed to link appsink branch for " + options_.source.id;
-        return false;
-      }
-    }
-  } else if (options_.app_sink.enabled) {
+  if (options_.app_sink.enabled) {
     if (!gst_element_link_many(source_tail, appsink_queue_, app_sink_, nullptr)) {
       if (err) *err = "failed to link appsink branch for " + options_.source.id;
       return false;
@@ -458,9 +340,6 @@ void V4l2Pipeline::Stop() {
   pipeline_ = nullptr;
   source_ = nullptr;
   source_caps_ = nullptr;
-  jpeg_decoder_ = nullptr;
-  normalize_convert_ = nullptr;
-  normalize_caps_ = nullptr;
   rate_filter_ = nullptr;
   rate_caps_ = nullptr;
   preview_convert_ = nullptr;
@@ -469,11 +348,8 @@ void V4l2Pipeline::Stop() {
   parser_ = nullptr;
   mux_ = nullptr;
   record_sink_ = nullptr;
-  tee_ = nullptr;
   appsink_queue_ = nullptr;
   app_sink_ = nullptr;
-  record_queue_ = nullptr;
-  preview_queue_ = nullptr;
   base_time_ns_.store(GST_CLOCK_TIME_NONE);
   probe_contexts_.clear();
 }

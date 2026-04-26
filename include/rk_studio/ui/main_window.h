@@ -24,6 +24,7 @@ class MainWindow : public QMainWindow {
   void TogglePreview();
   void ToggleRecording();
   void ToggleRtsp();
+  void ToggleZenoh();
   void ToggleMediapipe();
   void ToggleYolo();
   void OnStateChanged(rkstudio::AppState state);
@@ -50,12 +51,12 @@ class MainWindow : public QMainWindow {
   QPushButton* preview_button_ = nullptr;
   QPushButton* record_button_ = nullptr;
   QPushButton* rtsp_button_ = nullptr;
+  QPushButton* zenoh_button_ = nullptr;
   QPushButton* mediapipe_toggle_button_ = nullptr;
   QPushButton* yolo_toggle_button_ = nullptr;
   QPlainTextEdit* log_view_ = nullptr;
   std::map<QString, PreviewTileWidget*> tiles_;
   int telemetry_ok_skip_counter_ = 0;
-  int yolo_empty_skip_counter_ = 0;
 };
 
 }  // namespace rkstudio::ui

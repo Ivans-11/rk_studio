@@ -14,6 +14,7 @@ class PreviewTileWidget : public QWidget {
 
  public:
   explicit PreviewTileWidget(QString camera_id, QWidget* parent = nullptr);
+  ~PreviewTileWidget() override;
 
   QString camera_id() const;
   WId sink_window_id();
@@ -31,12 +32,16 @@ class PreviewTileWidget : public QWidget {
 
  private:
   void RebindSinkWindow();
+  void UpdateVideoGeometry();
+  void UpdateOverlayGeometry();
 
   QString camera_id_;
   QLabel* title_ = nullptr;
   QLabel* status_ = nullptr;
+  QWidget* video_container_ = nullptr;
   QFrame* sink_host_ = nullptr;
   QWidget* overlay_ = nullptr;
+  QWidget* tracked_window_ = nullptr;
 };
 
 }  // namespace rkstudio::ui

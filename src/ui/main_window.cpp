@@ -14,7 +14,6 @@
 #include <QVBoxLayout>
 
 #include "rk_studio/domain/config.h"
-#include "rk_studio/vision_core/coco_labels.h"
 
 namespace rkstudio::ui {
 namespace {
@@ -95,10 +94,12 @@ void MainWindow::BuildUi() {
   preview_button_ = new QPushButton(QStringLiteral("启动预览"), side_panel);
   record_button_ = new QPushButton(QStringLiteral("启动录制"), side_panel);
   rtsp_button_ = new QPushButton(QStringLiteral("启动 RTSP"), side_panel);
+  zenoh_button_ = new QPushButton(QStringLiteral("启动 Zenoh"), side_panel);
   mediapipe_toggle_button_ = new QPushButton(QStringLiteral("启动 Mediapipe"), side_panel);
   yolo_toggle_button_ = new QPushButton(QStringLiteral("启动 YOLO"), side_panel);
   record_button_->setEnabled(false);
   rtsp_button_->setEnabled(false);
+  zenoh_button_->setEnabled(false);
   mediapipe_toggle_button_->setEnabled(false);
   yolo_toggle_button_->setEnabled(false);
 
@@ -113,6 +114,7 @@ void MainWindow::BuildUi() {
   side_layout->addWidget(preview_button_);
   side_layout->addWidget(record_button_);
   side_layout->addWidget(rtsp_button_);
+  side_layout->addWidget(zenoh_button_);
   side_layout->addWidget(mediapipe_toggle_button_);
   side_layout->addWidget(yolo_toggle_button_);
   side_layout->addWidget(state_label_);
@@ -127,6 +129,7 @@ void MainWindow::BuildUi() {
   connect(preview_button_, &QPushButton::clicked, this, &MainWindow::TogglePreview);
   connect(record_button_, &QPushButton::clicked, this, &MainWindow::ToggleRecording);
   connect(rtsp_button_, &QPushButton::clicked, this, &MainWindow::ToggleRtsp);
+  connect(zenoh_button_, &QPushButton::clicked, this, &MainWindow::ToggleZenoh);
   connect(mediapipe_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleMediapipe);
   connect(yolo_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleYolo);
 }
@@ -174,7 +177,8 @@ void MainWindow::LoadConfigFiles() {
 
   if (runtime_manager_->state() != AppState::kIdle ||
       runtime_manager_->mediapipe_enabled() ||
-      runtime_manager_->yolo_enabled()) {
+      runtime_manager_->yolo_enabled() ||
+      runtime_manager_->zenoh_enabled()) {
     runtime_manager_->StopAll();
   }
   runtime_manager_->LoadBoardConfig(board_config);
@@ -222,6 +226,18 @@ void MainWindow::ToggleRtsp() {
   }
 }
 
+void MainWindow::ToggleZenoh() {
+  if (runtime_manager_->zenoh_enabled()) {
+    runtime_manager_->StopZenoh();
+  } else {
+    std::string err;
+    if (!runtime_manager_->StartZenoh(&err)) {
+      QMessageBox::warning(this, QStringLiteral("Zenoh 失败"), QString::fromStdString(err));
+    }
+  }
+  OnStateChanged(runtime_manager_->state());
+}
+
 void MainWindow::OnStateChanged(rkstudio::AppState state) {
   struct StateRow {
     const char* label;
@@ -231,6 +247,7 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
     bool record_enabled;
     QString rtsp_text;
     bool rtsp_enabled;
+    bool zenoh_enabled;
     bool mediapipe_enabled;
     bool yolo_enabled;
   };
@@ -243,12 +260,14 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         QStringLiteral("启动录制"), true,
         QStringLiteral("启动 RTSP"), true,
         true,
+        true,
         true};
     t[rkstudio::AppState::kPreviewing] = {
         "Previewing",
         QStringLiteral("关闭预览"), true,
         QStringLiteral("启动录制"), true,
         QStringLiteral("启动 RTSP"), true,
+        true,
         true,
         true};
     t[rkstudio::AppState::kRecording] = {
@@ -257,19 +276,22 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         QStringLiteral("停止录制"), true,
         {}, false,
         false,
+        false,
         false};
     t[rkstudio::AppState::kStreaming] = {
         "Streaming",
         {}, false,
         {}, false,
         QStringLiteral("停止 RTSP"), true,
-        false,
-        false};
+        true,
+        true,
+        true};
     t[rkstudio::AppState::kError] = {
         "Error",
         QStringLiteral("启动预览"), true,
         QStringLiteral("启动录制"), false,
         QStringLiteral("启动 RTSP"), false,
+        false,
         false,
         false};
     return t;
@@ -285,6 +307,12 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
   record_button_->setEnabled(row.record_enabled);
   if (!row.rtsp_text.isEmpty()) rtsp_button_->setText(row.rtsp_text);
   rtsp_button_->setEnabled(row.rtsp_enabled);
+  zenoh_button_->setText(runtime_manager_->zenoh_enabled() ? QStringLiteral("关闭 Zenoh")
+                                                           : QStringLiteral("启动 Zenoh"));
+  zenoh_button_->setEnabled(row.zenoh_enabled &&
+                            (runtime_manager_->zenoh_enabled() ||
+                             runtime_manager_->mediapipe_enabled() ||
+                             runtime_manager_->yolo_enabled()));
   mediapipe_toggle_button_->setText(runtime_manager_->mediapipe_enabled() ? QStringLiteral("关闭 Mediapipe")
                                                                        : QStringLiteral("启动 Mediapipe"));
   yolo_toggle_button_->setText(runtime_manager_->yolo_enabled() ? QStringLiteral("关闭 YOLO")
@@ -338,6 +366,7 @@ void MainWindow::ToggleMediapipe() {
       it->second->ClearMediapipeResult();
     }
   }
+  OnStateChanged(runtime_manager_->state());
 }
 
 void MainWindow::OnMediapipeResult(rkstudio::vision::MediapipeResult result) {
@@ -368,6 +397,7 @@ void MainWindow::ToggleYolo() {
       it->second->ClearYoloResult();
     }
   }
+  OnStateChanged(runtime_manager_->state());
 }
 
 void MainWindow::OnYoloResult(rkstudio::vision::YoloResult result) {
@@ -384,35 +414,6 @@ void MainWindow::OnYoloResult(rkstudio::vision::YoloResult result) {
                   .arg(QString::fromStdString(result.error)));
     return;
   }
-  if (result.detections.empty()) {
-    if (++yolo_empty_skip_counter_ % 10 == 0) {
-      AppendLog(QString("[yolo] %1 no objects, infer %.1f fps")
-                    .arg(QString::fromStdString(result.camera_id))
-                    .arg(result.fps));
-    }
-    return;
-  }
-
-  QStringList top;
-  const int limit = std::min<int>(3, result.detections.size());
-  for (int i = 0; i < limit; ++i) {
-    const auto& det = result.detections[static_cast<size_t>(i)];
-    const char* class_name = vision::CocoLabel(det.class_id);
-    top << QString("%1 %.2f [%2,%3,%4,%5]")
-               .arg(class_name != nullptr
-                        ? QString::fromLatin1(class_name)
-                        : QString("#%1").arg(det.class_id))
-               .arg(det.score)
-               .arg(det.box.x1)
-               .arg(det.box.y1)
-               .arg(det.box.x2)
-               .arg(det.box.y2);
-  }
-  AppendLog(QString("[yolo] %1 %2 objects, infer %.1f fps: %3")
-                .arg(QString::fromStdString(result.camera_id))
-                .arg(result.detections.size())
-                .arg(result.fps)
-                .arg(top.join(QStringLiteral("; "))));
 }
 
 }  // namespace rkstudio::ui

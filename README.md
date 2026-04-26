@@ -1,11 +1,43 @@
 # rk_studio
 
-RK3588 上的多路摄像头预览、录制、RTSP 推流、手部关键点和目标检测应用。基于 Qt5 + GStreamer + RKNN，利用 RGA 硬件加速图像预处理。
+RK3588 上的 4 路摄像头预览、录制、RTSP 推流、Mediapipe 手部关键点、YOLO 目标检测和 Zenoh 结果发布应用。项目面向 LubanCat-5 V2 + IMX415，使用 Qt5、GStreamer、RKNN 和 RGA。
 
-## 快速开始
+## 快速部署
+
+### 1. 开启摄像头 overlay
+
+在板子的 `/boot/uEnv/uEnv.txt` 中启用 IMX415 overlay，4 路运行使用 `cam0` 到 `cam3`：
+
+```text
+dtoverlay=/dtb/overlay/rk3588-lubancat-5-cam0-imx415-1920x1080-60fps-overlay.dtbo
+dtoverlay=/dtb/overlay/rk3588-lubancat-5-cam1-imx415-1920x1080-60fps-overlay.dtbo
+dtoverlay=/dtb/overlay/rk3588-lubancat-5-cam2-imx415-1920x1080-60fps-overlay.dtbo
+dtoverlay=/dtb/overlay/rk3588-lubancat-5-cam3-imx415-1920x1080-60fps-overlay.dtbo
+```
+
+重启后检查：
 
 ```bash
-# 1. 安装依赖
+dmesg | grep -i imx415
+```
+
+### 2. 同步项目
+
+从 Mac 同步到板子时建议用 `tar`，避免带上 `.DS_Store` / `._*`：
+
+```bash
+cd /Users/aksea/Project/Linux/RK3588
+tar --exclude='.git' --exclude='build' --exclude='records' \
+    --exclude='.DS_Store' --exclude='._*' --exclude='__MACOSX' \
+    -czf /tmp/rk_studio.tar.gz rk_studio
+
+scp /tmp/rk_studio.tar.gz cat@<board-ip>:/tmp/
+ssh cat@<board-ip> 'rm -rf /home/cat/rk_studio && cd /home/cat && tar -xzf /tmp/rk_studio.tar.gz'
+```
+
+### 3. 安装依赖
+
+```bash
 sudo apt-get install -y \
   cmake g++ pkg-config \
   qtbase5-dev \
@@ -15,56 +47,36 @@ sudo apt-get install -y \
   gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
   libopencv-dev
 
-# 2. 安装项目自带的 RKNN Toolkit2 2.3.0 runtime
-sudo install -m 0644 third_party/rknn/runtime/aarch64/librknnrt.so /usr/lib/librknnrt.so
-sudo ldconfig
+cd /home/cat/rk_studio
+./scripts/install_board_deps.sh
+```
 
-# 3. 创建配置文件（按你的硬件修改）
+`install_board_deps.sh` 会安装项目自带的：
+
+- RKNN Toolkit2 2.3.0 runtime: `third_party/rknn/runtime/aarch64/librknnrt.so`
+- zenoh-c 1.9.0 arm64 deb: `third_party/zenohc/debian/arm64/`
+
+验证：
+
+```bash
+nm -D /usr/lib/librknnrt.so | grep rknn_mem_sync
+test -f /usr/lib/cmake/zenohc/zenohcConfig.cmake
+```
+
+### 4. 配置、构建、运行
+
+```bash
+cd /home/cat/rk_studio
 cp config/board.example.toml config/board.toml
 cp config/profile.example.toml config/profile.toml
 
-# 4. 构建
 cmake -S . -B build
 cmake --build build -j$(nproc)
 
-# 5. 运行
-cd build && ./rk_studio
+./build/rk_studio
 ```
 
-## 板端额外依赖
-
-- `librknnrt.so` — RKNN 推理运行时；仓库内置 RKNN Toolkit2 2.3.0 的 aarch64 版本，路径为 `third_party/rknn/runtime/aarch64/librknnrt.so`
-- `librga.so` — RGA 2D 硬件加速（可选，无则自动回退 CPU）
-- RK3588 的 GStreamer / MPP / V4L2 运行环境
-
-## 新板子初始化
-
-LubanCat-5 V2 + IMX415 摄像头的快速跑通流程：
-
-1. 在 `/boot/uEnv/uEnv.txt` 中启用需要的 IMX415 overlay；4 路运行时使用 `cam0` 到 `cam3`：
-
-```text
-dtoverlay=/dtb/overlay/rk3588-lubancat-5-cam0-imx415-1920x1080-60fps-overlay.dtbo
-dtoverlay=/dtb/overlay/rk3588-lubancat-5-cam1-imx415-1920x1080-60fps-overlay.dtbo
-dtoverlay=/dtb/overlay/rk3588-lubancat-5-cam2-imx415-1920x1080-60fps-overlay.dtbo
-dtoverlay=/dtb/overlay/rk3588-lubancat-5-cam3-imx415-1920x1080-60fps-overlay.dtbo
-```
-
-2. 重启后确认摄像头被识别：
-
-```bash
-dmesg | grep -i imx415
-```
-
-3. 安装 RKNN runtime，替换系统旧版 `librknnrt.so`：
-
-```bash
-sudo install -m 0644 third_party/rknn/runtime/aarch64/librknnrt.so /usr/lib/librknnrt.so
-sudo ldconfig
-nm -D /usr/lib/librknnrt.so | grep rknn_mem_sync
-```
-
-4. 使用默认示例配置即可启动 4 路摄像头。当前模板使用已验证的 ISP mainpath 节点：
+默认 camera 节点：
 
 ```text
 cam0 -> /dev/video55
@@ -73,123 +85,125 @@ cam2 -> /dev/video73
 cam3 -> /dev/video82
 ```
 
-## 目录结构
+如果新板子 video 编号不同，只需要改 `config/board.toml` 里的 `[camera.<id>].record_device`。
 
-```text
-rk_studio/
-├── config/
-│   ├── board.example.toml      # 板级硬件配置模板
-│   └── profile.example.toml    # 会话/布局配置模板
-├── models/
-│   ├── hand_detector.rknn      # 手掌检测模型
-│   ├── hand_landmarks.rknn     # 手部关键点模型
-│   └── yolo11n_rk3588_int8.rknn # YOLO11n 目标检测模型
-├── include/
-│   ├── rk_studio/              # 应用层头文件
-│   └── mediapipe/              # Mediapipe 推理管线头文件
-├── src/                        # 源码
-├── third_party/                # RKNN API / toml++ 头文件
-└── CMakeLists.txt
-```
-
-## 配置说明
+## 配置
 
 ### board.toml
 
-板级硬件配置，定义摄像头设备、音频设备、RTSP 参数等。
+常改字段：
 
 ```toml
-[camera.cam0]
-record_device = "/dev/video55"   # V4L2 设备路径
-input_format = "NV12"            # 输入格式
-io_mode = "dmabuf"               # I/O 模式（dmabuf 启用 RGA 加速）
-record_width = 1920
-record_height = 1080
-preview_width = 640
-preview_height = 360
-fps = 30
-bitrate = 8000000                # 录制码率 (bps)
-
 [rtsp]
-port = 8554
-codec = "h265"
-bitrate = 4000000                # RTSP 推流码率 (bps)
-mounts = ["cam", "cam0"]         # 要注册的 RTSP 路径；cam 为拼接流，cam0/cam1 为单路流
-```
+mounts = ["cam", "cam0", "cam1", "cam2", "cam3"]
 
-RTSP 根据 `mounts` 注册拼接流和单路摄像头流。`cam` 是拼接流，其他项需要匹配 `[camera.<id>]`。以板子 IP `10.31.2.28` 为例：
+[zenoh]
+mode = "peer"
+connect = []
+listen = []
+key_prefix = "rk_studio"
 
-```text
-rtsp://10.31.2.28:8554/cam     # 4 路拼接画面
-rtsp://10.31.2.28:8554/cam0    # cam0 单路
-rtsp://10.31.2.28:8554/cam1    # cam1 单路
-rtsp://10.31.2.28:8554/cam2    # cam2 单路
-rtsp://10.31.2.28:8554/cam3    # cam3 单路
-```
-
-单路 RTSP 从 camera 的 `record_width` / `record_height` 取全幅画面，再缩放到 `preview_width` / `preview_height`，避免低分辨率 V4L2 协商触发驱动裁剪；H.265 单路输出会把宽高向上对齐到 16 的倍数以兼容硬件编码/客户端解码；拼接流使用预览尺寸；录制仍使用 `record_width` / `record_height`。
-
-### profile.toml
-
-会话配置，定义预览/录制的摄像头选择、输出目录、UI 布局等。
-
-### Mediapipe 模型
-
-模型文件自动从 `models/` 目录加载，无需手动配置路径。如需自定义路径，在 `board.toml` 中添加：
-
-```toml
-[mediapipe]
-detector_model = "/custom/path/hand_detector.rknn"
-landmark_model = "/custom/path/hand_landmarks.rknn"
-```
-
-### YOLO 模型
-
-YOLO 模型同样会从 `models/` 目录自动加载，默认优先使用 `yolo11n_rk3588_int8.rknn`，本地识别链路默认按 5fps 提交帧。如需自定义路径或阈值，在 `board.toml` 中添加：
-
-```toml
 [yolo]
-model = "/custom/path/yolo11n_rk3588_int8.rknn"
+model = "../models/yolo11n_rk3588_int8.rknn"
 fps = 5
 confidence_threshold = 0.25
 nms_threshold = 0.45
 max_detections = 50
+
+[camera.cam0]
+record_device = "/dev/video55"
+preview_width = 640
+preview_height = 360
+fps = 30
 ```
 
-`profile.toml` 中用 `selected_mediapipe_camera` 和 `selected_yolo_camera` 分别选择 Mediapipe/YOLO 使用的摄像头。两条识别链路各自从对应摄像头的 selfpath 取 640x360 低分辨率流，避免互相抢同一路 selfpath。
-
-## 功能
-
-- **多路预览** — 最多 4 路摄像头实时预览（2x2 网格）
-- **多路录制** — H.265 硬编码录制，支持同步录音
-- **RTSP 推流** — 多路合成马赛克画面推流
-- **手部关键点** — 基于 RKNN 的实时手部检测和 21 点关键点追踪
-- **YOLO 目标检测** — 基于 RKNN 的 YOLO11n 目标识别，默认 5fps
-- **RGA 硬件加速** — NV12 到 RGB 的色彩转换由 RGA 硬件完成，自动回退 CPU
-
-## 使用方式
-
-1. 启动程序，配置自动加载
-2. 点击「启动预览」— 多路摄像头画面
-3. 点击「启动 Mediapipe」— cam0 叠加手部关键点
-4. 点击「启动 YOLO」— cam1 运行 5fps 目标检测
-5. 点击「启动录制」— 开始录像 + 录音
-6. 点击「启动 RTSP」— 推流到 `rtsp://<ip>:8554/cam`
-
-预览、录制、RTSP 三种模式互斥。Mediapipe/YOLO 需要在录制前开启；进入录制后功能组合会冻结，只允许停止录制。
-
-## 输出文件
-
-录制会话输出到 `output_dir`（默认 `./records`）：
+RTSP mount 规则：
 
 ```text
-records/rk_studio-20260416-143000/
-├── cam0.mkv             # 各路视频
+rtsp://<board-ip>:8554/cam   # 4 路拼接流
+rtsp://<board-ip>:8554/cam0  # cam0 单路
+rtsp://<board-ip>:8554/cam1  # cam1 单路
+rtsp://<board-ip>:8554/cam2  # cam2 单路
+rtsp://<board-ip>:8554/cam3  # cam3 单路
+```
+
+单路 RTSP 直接向 V4L2 请求 `preview_width` / `preview_height` 尺寸；H.265 会把宽高向上对齐到 16 的倍数。帧率通过 GStreamer `videorate drop-only=true` 限制。
+
+Zenoh 发布模型结果：
+
+```text
+rk_studio/mediapipe/<camera_id>/hands
+rk_studio/yolo/<camera_id>/objects
+```
+
+### profile.toml
+
+```toml
+[session]
+preview_cameras = ["cam0", "cam1", "cam2", "cam3"]
+prefix = "rk_studio"
+audio_source = ""
+selected_mediapipe_camera = "cam0"
+selected_yolo_camera = "cam1"
+```
+
+Mediapipe 和 YOLO 可以选择不同摄像头。两者不能使用同一个识别摄像头。
+
+## 使用规则
+
+- `启动预览`：显示 4 路预览画面。
+- `启动 Mediapipe`：开启手部关键点推理；如果预览已开启，在对应画面叠加结果。
+- `启动 YOLO`：开启目标检测；如果预览已开启，在对应画面叠加检测框。
+- `启动 Zenoh`：至少开启一个 Mediapipe/YOLO 后才能启动，发布当前模型结果。
+- `启动录制`：录制前可以先开启 Mediapipe/YOLO/Zenoh；录制开始后功能组合冻结，只允许停止录制。
+- `启动 RTSP`：按 `board.toml` 的 `[rtsp].mounts` 注册推流地址。
+
+预览、录制、RTSP 三种模式互斥，它们占用 mainpath。Mediapipe/YOLO 是独立 selfpath 推理链路，不要求先开启预览，可以和 RTSP 同时运行。Zenoh 只依赖至少一个模型开启。YOLO 只显示、记录和发布置信度大于 0.7 的目标。
+
+## 输出
+
+录制会话输出到 `records/`：
+
+```text
+records/rk_studio-YYYYMMDD-HHMMSS/
+├── cam0.mkv
 ├── cam1.mkv
-├── mic0.mkv             # 音频
-├── session.meta.json    # 会话元信息
-├── session.sync.json    # 多路同步分析
-├── studio.events.jsonl  # 遥测事件流
-├── mediapipe.hand.jsonl # Mediapipe 推理结果
-└── yolo.objects.jsonl   # YOLO 物体检测结果
+├── mic0.mkv
+├── session.meta.json
+├── session.sync.json
+├── studio.events.jsonl
+├── mediapipe.hand.jsonl
+└── yolo.objects.jsonl
+```
+
+模型结果 jsonl 只保留核心字段；需要更多字段时再扩展。
+
+## 上板测试清单
+
+接入新功能后建议按这个顺序测：
+
+1. `./build/rk_studio` 能启动并自动加载配置。
+2. 只开预览：4 路画面正常，帧率限制生效。
+3. 只开 Mediapipe：不开预览也能产生日志；开预览后只叠加关键点，不影响底层预览画面。
+4. 只开 YOLO：确认使用当前模型和 COCO 类别名。
+5. 同时开 Mediapipe + YOLO：两个摄像头分别叠加，UI 不闪烁、不抢画面。
+6. 开 Zenoh：订阅端能收到 `rk_studio/mediapipe/...` 或 `rk_studio/yolo/...`。
+7. 开 RTSP + 模型 + Zenoh：RTSP 画面和 Zenoh 模型结果同时正常。
+8. 先开模型和 Zenoh，再开始录制：录制期间按钮状态冻结，停止后生成 jsonl。
+
+## 目录
+
+```text
+rk_studio/
+├── config/                     # board/profile 配置模板
+├── models/                     # RKNN 模型
+├── include/                    # 头文件
+├── src/                        # 源码
+├── scripts/
+│   └── install_board_deps.sh   # 安装板端 RKNN / Zenoh runtime 依赖
+├── third_party/
+│   ├── rknn/                   # RKNN API 和 runtime
+│   ├── zenohc/                 # zenoh-c 1.9.0 arm64 deb
+│   └── tomlplusplus/           # TOML 解析头文件
+└── CMakeLists.txt
 ```

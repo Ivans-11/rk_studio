@@ -103,9 +103,6 @@ class V4l2Pipeline {
   GstElement* pipeline_ = nullptr;
   GstElement* source_ = nullptr;
   GstElement* source_caps_ = nullptr;
-  GstElement* jpeg_decoder_ = nullptr;
-  GstElement* normalize_convert_ = nullptr;
-  GstElement* normalize_caps_ = nullptr;
   GstElement* rate_filter_ = nullptr;
   GstElement* rate_caps_ = nullptr;
 
@@ -117,11 +114,8 @@ class V4l2Pipeline {
   GstElement* mux_ = nullptr;
   GstElement* record_sink_ = nullptr;
 
-  GstElement* tee_ = nullptr;
   GstElement* appsink_queue_ = nullptr;
   GstElement* app_sink_ = nullptr;
-  GstElement* record_queue_ = nullptr;
-  GstElement* preview_queue_ = nullptr;
 
   std::atomic<bool> stop_requested_{false};
   std::atomic<bool> bus_done_{false};

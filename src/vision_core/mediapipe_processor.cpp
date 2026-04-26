@@ -16,7 +16,6 @@
 #include "mediapipe/common/types.h"
 #include "mediapipe/detector/palm_detector.h"
 #include "mediapipe/landmark/hand_landmark.h"
-#include "mediapipe/preprocess/hw_preprocess.h"
 #include "mediapipe/preprocess/image_ops.h"
 #include "mediapipe/tracking/hand_tracker.h"
 
@@ -94,26 +93,6 @@ cv::Mat ToRgbMat(const FrameRef& frame) {
     return rgb;
   }
   return {};
-}
-
-std::optional<mediapipe_demo::CameraFrame> ToCameraFrame(const FrameRef& frame) {
-  if (frame.pixel_format != PixelFormat::kNv12 ||
-      frame.dmabuf_fd < 0 ||
-      frame.fourcc == 0 ||
-      frame.width <= 0 ||
-      frame.height <= 0 ||
-      frame.stride <= 0) {
-    return std::nullopt;
-  }
-
-  mediapipe_demo::CameraFrame camera_frame;
-  camera_frame.width = frame.width;
-  camera_frame.height = frame.height;
-  camera_frame.stride = frame.stride;
-  camera_frame.fourcc = frame.fourcc;
-  camera_frame.bytes_used = frame.bytes_used;
-  camera_frame.dmabuf_fd = frame.dmabuf_fd;
-  return camera_frame;
 }
 
 cv::Point2f RoiCenter(const mediapipe_demo::RoiRect& roi) {
@@ -421,18 +400,10 @@ class MediapipeProcessor final : public IMediapipeProcessor {
     if (any_should_detect) {
       mediapipe_demo::PreprocessMeta det_meta;
 
-      std::optional<std::vector<mediapipe_demo::PalmDetection>> hardware_detections;
-      if (input.raw.has_value()) {
-        hardware_detections = DetectPalmsWithHardware(*input.raw, &det_meta);
-      }
-      if (hardware_detections.has_value()) {
-        detections = std::move(*hardware_detections);
-      } else {
-        cv::Mat& rgb_frame = ensure_rgb();
-        if (!rgb_frame.empty()) {
-          cv::Mat det_input = mediapipe_demo::LetterboxPadding(rgb_frame, detector_size, &det_meta);
-          detections = detector_.InferMulti(det_input, det_meta, pipeline_config_.detector_score_threshold, kMaxHands);
-        }
+      cv::Mat& rgb_frame = ensure_rgb();
+      if (!rgb_frame.empty()) {
+        cv::Mat det_input = mediapipe_demo::LetterboxPadding(rgb_frame, detector_size, &det_meta);
+        detections = detector_.InferMulti(det_input, det_meta, pipeline_config_.detector_score_threshold, kMaxHands);
       }
 
       for (const auto& det : detections) {
@@ -474,31 +445,6 @@ class MediapipeProcessor final : public IMediapipeProcessor {
     result.ok = true;
     ++frame_index_;
     return result;
-  }
-
-  std::optional<std::vector<mediapipe_demo::PalmDetection>> DetectPalmsWithHardware(
-      const FrameRef& raw_frame,
-      mediapipe_demo::PreprocessMeta* meta) {
-    if (meta == nullptr) {
-      return std::nullopt;
-    }
-    std::optional<mediapipe_demo::CameraFrame> camera_frame = ToCameraFrame(raw_frame);
-    if (!camera_frame.has_value()) {
-      return std::nullopt;
-    }
-    rknn_tensor_mem* input_mem = detector_.InputMemory();
-    if (input_mem == nullptr ||
-        !mediapipe_demo::PreprocessFrameToRknn(
-            *camera_frame,
-            cv::Rect(0, 0, raw_frame.width, raw_frame.height),
-            true,
-            input_mem,
-            detector_.InputAttr(),
-            meta) ||
-        !detector_.SyncInputMemory()) {
-      return std::nullopt;
-    }
-    return detector_.InferPreparedMulti(pipeline_config_.detector_score_threshold, kMaxHands);
   }
 
   MediapipeProcessorConfig config_;

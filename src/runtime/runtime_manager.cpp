@@ -9,6 +9,7 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
 
   media_engine_ = new media::MediaEngine(this);
   vision_engine_ = new media::VisionEngine(this);
+  vision_engine_->SetZenohPublisher(&zenoh_publisher_);
 
   connect(media_engine_, &media::MediaEngine::TelemetryObserved,
           this, &RuntimeManager::TelemetryObserved);
@@ -114,6 +115,24 @@ bool RuntimeManager::StartRtsp(std::string* err) {
   return true;
 }
 
+bool RuntimeManager::StartZenoh(std::string* err) {
+  if (state_ != AppState::kIdle &&
+      state_ != AppState::kPreviewing &&
+      state_ != AppState::kStreaming) {
+    if (err) *err = "cannot start Zenoh in current state";
+    return false;
+  }
+  if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
+    if (err) *err = "start Mediapipe or YOLO before starting Zenoh";
+    return false;
+  }
+  if (!media_engine_->board_config().zenoh.has_value()) {
+    if (err) *err = "no [zenoh] section in board config";
+    return false;
+  }
+  return zenoh_publisher_.Start(*media_engine_->board_config().zenoh, err);
+}
+
 void RuntimeManager::StopRecording() {
   if (state_ != AppState::kRecording) {
     return;
@@ -145,7 +164,15 @@ void RuntimeManager::StopRtsp() {
   SetState(AppState::kIdle);
 }
 
+void RuntimeManager::StopZenoh() {
+  if (state_ == AppState::kRecording) {
+    return;
+  }
+  zenoh_publisher_.Stop();
+}
+
 void RuntimeManager::StopAll() {
+  zenoh_publisher_.Stop();
   if (state_ == AppState::kRecording) {
     vision_engine_->StopAll();
     vision_engine_->SetSessionWriter(nullptr);
@@ -171,7 +198,13 @@ bool RuntimeManager::ToggleMediapipe(bool enable, std::string* err) {
   }
   vision_engine_->SetState(state_);
   vision_engine_->SetSessionWriter(nullptr);
-  return vision_engine_->ToggleMediapipe(enable, err);
+  if (!vision_engine_->ToggleMediapipe(enable, err)) {
+    return false;
+  }
+  if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
+    zenoh_publisher_.Stop();
+  }
+  return true;
 }
 
 bool RuntimeManager::ToggleYolo(bool enable, std::string* err) {
@@ -181,7 +214,13 @@ bool RuntimeManager::ToggleYolo(bool enable, std::string* err) {
   }
   vision_engine_->SetState(state_);
   vision_engine_->SetSessionWriter(nullptr);
-  return vision_engine_->ToggleYolo(enable, err);
+  if (!vision_engine_->ToggleYolo(enable, err)) {
+    return false;
+  }
+  if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
+    zenoh_publisher_.Stop();
+  }
+  return true;
 }
 
 bool RuntimeManager::mediapipe_enabled() const {
@@ -190,6 +229,10 @@ bool RuntimeManager::mediapipe_enabled() const {
 
 bool RuntimeManager::yolo_enabled() const {
   return vision_engine_->yolo_enabled();
+}
+
+bool RuntimeManager::zenoh_enabled() const {
+  return zenoh_publisher_.active();
 }
 
 const BoardConfig& RuntimeManager::board_config() const {

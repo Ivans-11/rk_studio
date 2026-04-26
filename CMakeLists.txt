@@ -14,6 +14,7 @@ set(CMAKE_AUTOUIC ON)
 find_package(Threads REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+find_package(zenohc REQUIRED)
 find_package(PkgConfig REQUIRED)
 
 pkg_check_modules(GST REQUIRED IMPORTED_TARGET
@@ -32,6 +33,7 @@ set(RK_STUDIO_INFRA_SOURCES
   src/infra/runtime.cpp
   src/infra/gst_util.cpp
   src/infra/gst_audio_recorder.cpp
+  src/infra/zenoh_publisher.cpp
   src/infra/telemetry.cpp
   src/infra/session_files.cpp
 )
@@ -86,6 +88,7 @@ set(RK_STUDIO_HEADERS
   include/rk_studio/infra/config_types.h
   include/rk_studio/infra/telemetry.h
   include/rk_studio/infra/gst_audio_recorder.h
+  include/rk_studio/infra/zenoh_publisher.h
   include/rk_studio/infra/session_files.h
 )
 
@@ -114,6 +117,7 @@ target_link_libraries(rk_studio
     Threads::Threads
     PkgConfig::GST
     ${OpenCV_LIBS}
+    zenohc::lib
     rknnrt
     rga
 )

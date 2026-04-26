@@ -42,6 +42,7 @@ struct MediapipeHardwareConfig {
 
 struct YoloHardwareConfig {
   std::string model;             // resolved at runtime if empty
+  std::vector<std::string> class_names;
   int fps = 5;
   double confidence_threshold = 0.25;
   double nms_threshold = 0.45;
@@ -55,6 +56,13 @@ struct RtspConfig {
   std::vector<std::string> mounts{"cam"};
 };
 
+struct ZenohConfig {
+  std::string mode = "peer";
+  std::vector<std::string> connect;
+  std::vector<std::string> listen;
+  std::string key_prefix = "rk_studio";
+};
+
 struct BoardConfig {
   std::vector<CameraNodeSet> cameras;
   std::vector<AudioSource> audio_sources;
@@ -62,6 +70,7 @@ struct BoardConfig {
   std::optional<MediapipeHardwareConfig> mediapipe;
   std::optional<YoloHardwareConfig> yolo;
   std::optional<RtspConfig> rtsp;
+  std::optional<ZenohConfig> zenoh;
 };
 
 struct SessionProfile {

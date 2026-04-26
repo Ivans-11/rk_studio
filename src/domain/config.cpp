@@ -28,6 +28,21 @@ std::string ResolveModelPath(const std::string& config_path, const std::string& 
   return {};
 }
 
+std::string ResolveConfigRelativePath(const std::string& config_path, const std::string& value) {
+  if (value.empty()) {
+    return {};
+  }
+  const fs::path input(value);
+  if (input.is_absolute()) {
+    return input.string();
+  }
+  const fs::path resolved = fs::path(config_path).parent_path() / input;
+  if (fs::exists(resolved)) {
+    return fs::canonical(resolved).string();
+  }
+  return resolved.lexically_normal().string();
+}
+
 bool RejectUnknownKeys(const toml::table& table,
                       const std::unordered_set<std::string>& allowed,
                       const std::string& section_path,
@@ -172,6 +187,21 @@ bool ValidateBoardConfig(const BoardConfig& config, std::string* err) {
       return false;
     }
   }
+  if (config.zenoh.has_value()) {
+    const auto& zenoh = *config.zenoh;
+    if (zenoh.mode != "peer" && zenoh.mode != "client" && zenoh.mode != "router") {
+      if (err) {
+        *err = "zenoh.mode must be one of: peer, client, router";
+      }
+      return false;
+    }
+    if (zenoh.key_prefix.empty()) {
+      if (err) {
+        *err = "zenoh.key_prefix must not be empty";
+      }
+      return false;
+    }
+  }
   return true;
 }
 
@@ -312,6 +342,8 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
     parsed.mediapipe = MediapipeHardwareConfig{};
   }
   auto& mediapipe = *parsed.mediapipe;
+  mediapipe.detector_model = ResolveConfigRelativePath(path, mediapipe.detector_model);
+  mediapipe.landmark_model = ResolveConfigRelativePath(path, mediapipe.landmark_model);
   if (mediapipe.detector_model.empty()) {
     mediapipe.detector_model = ResolveModelPath(path, "hand_detector.rknn");
   }
@@ -325,12 +357,13 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
 
   if (const auto* yolo_table = root["yolo"].as_table()) {
     static const std::unordered_set<std::string> kAllowed{
-        "model", "fps", "confidence_threshold", "nms_threshold", "max_detections"};
+        "model", "class_names", "fps", "confidence_threshold", "nms_threshold", "max_detections"};
     if (!RejectUnknownKeys(*yolo_table, kAllowed, "yolo", err)) {
       return false;
     }
     YoloHardwareConfig yolo;
     if (!AssignValue(*yolo_table, "model", &yolo.model, "yolo", err) ||
+        !AssignStringArray(*yolo_table, "class_names", &yolo.class_names, "yolo", err) ||
         !AssignValue(*yolo_table, "fps", &yolo.fps, "yolo", err) ||
         !AssignValue(*yolo_table, "confidence_threshold", &yolo.confidence_threshold, "yolo", err) ||
         !AssignValue(*yolo_table, "nms_threshold", &yolo.nms_threshold, "yolo", err) ||
@@ -344,6 +377,7 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
     parsed.yolo = YoloHardwareConfig{};
   }
   auto& yolo = *parsed.yolo;
+  yolo.model = ResolveConfigRelativePath(path, yolo.model);
   if (yolo.model.empty()) {
     yolo.model = ResolveModelPath(path, "yolo11n_rk3588_int8.rknn");
   }
@@ -367,6 +401,21 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
       return false;
     }
     parsed.rtsp = rtsp;
+  }
+
+  if (const auto* zenoh_table = root["zenoh"].as_table()) {
+    static const std::unordered_set<std::string> kAllowed{"mode", "connect", "listen", "key_prefix"};
+    if (!RejectUnknownKeys(*zenoh_table, kAllowed, "zenoh", err)) {
+      return false;
+    }
+    ZenohConfig zenoh;
+    if (!AssignValue(*zenoh_table, "mode", &zenoh.mode, "zenoh", err) ||
+        !AssignStringArray(*zenoh_table, "connect", &zenoh.connect, "zenoh", err) ||
+        !AssignStringArray(*zenoh_table, "listen", &zenoh.listen, "zenoh", err) ||
+        !AssignValue(*zenoh_table, "key_prefix", &zenoh.key_prefix, "zenoh", err)) {
+      return false;
+    }
+    parsed.zenoh = zenoh;
   }
 
   if (!ValidateBoardConfig(parsed, err)) {

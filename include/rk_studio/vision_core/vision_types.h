@@ -37,7 +37,6 @@ struct FrameRef {
 
 struct VisionFrame {
   FrameRef rgb;
-  std::optional<FrameRef> raw;
 };
 
 struct MediapipeProcessorConfig {
@@ -82,12 +81,14 @@ struct MediapipeResult {
 
 struct ObjectDetection {
   int class_id = -1;
+  std::string class_name;
   float score = 0.0f;
   RoiRect box;
 };
 
 struct YoloProcessorConfig {
   std::string model;
+  std::vector<std::string> class_names;
   int queue_depth = 1;
   float confidence_threshold = 0.25f;
   float nms_threshold = 0.45f;

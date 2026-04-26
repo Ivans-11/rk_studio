@@ -33,6 +33,12 @@ bool IsJpegFormat(const std::string& fmt) {
   return upper == "MJPG" || upper == "JPEG";
 }
 
+void AppendNv12RateCaps(std::ostringstream& ss, int width, int height, int fps) {
+  ss << "! videorate drop-only=true "
+     << "! video/x-raw,format=NV12,width=" << width << ",height=" << height
+     << ",framerate=" << fps << "/1 ";
+}
+
 int AlignUp(int value, int alignment) {
   return ((value + alignment - 1) / alignment) * alignment;
 }
@@ -83,14 +89,15 @@ std::string BuildMosaicLaunchString(const std::vector<const CameraNodeSet*>& cam
 
     if (IsJpegFormat(cam.input_format)) {
       ss << "! image/jpeg,width=" << tile_w << ",height=" << tile_h
-         << ",framerate=" << fps << "/1 "
+         << " "
          << "! jpegdec ! videoconvert ! video/x-raw,format=NV12,width="
          << tile_w << ",height=" << tile_h << " ";
     } else {
       ss << "! video/x-raw,format=NV12,width=" << tile_w << ",height=" << tile_h
-         << ",framerate=" << fps << "/1 ";
+         << " ";
     }
 
+    AppendNv12RateCaps(ss, tile_w, tile_h, fps);
     ss << "! queue leaky=downstream max-size-buffers=1 "
        << "! mix.sink_" << i << " ";
   }
@@ -111,15 +118,15 @@ std::string BuildCameraLaunchString(const CameraNodeSet& cam,
 
   if (IsJpegFormat(cam.input_format)) {
     ss << "! image/jpeg,width=" << out_w << ",height=" << out_h
-       << ",framerate=" << cam.fps << "/1 "
+       << " "
        << "! jpegdec ! videoconvert ! video/x-raw,format=NV12,width="
        << out_w << ",height=" << out_h << " ";
   } else {
     ss << "! video/x-raw,format=NV12,width=" << out_w << ",height=" << out_h
-       << ",framerate=" << cam.fps << "/1 ";
+       << " ";
   }
 
-  ss << "! videoconvert ! video/x-raw,format=NV12 ";
+  AppendNv12RateCaps(ss, out_w, out_h, cam.fps);
   AppendEncoderTail(ss, codec, gop, bitrate);
   ss << ")";
   return ss.str();

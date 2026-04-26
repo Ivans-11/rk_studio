@@ -24,6 +24,10 @@ class IMediapipeProcessor;
 class IYoloProcessor;
 }  // namespace rkstudio::vision
 
+namespace rkinfra {
+class ZenohPublisher;
+}  // namespace rkinfra
+
 namespace rkstudio::media {
 
 class SessionWriter;
@@ -45,6 +49,7 @@ class VisionEngine : public QObject {
   void ApplySessionProfile(const SessionProfile& profile);
   void SetState(AppState state);
   void SetSessionWriter(SessionWriter* session_writer);
+  void SetZenohPublisher(rkinfra::ZenohPublisher* zenoh_publisher);
   void SetCallbacks(Callbacks callbacks);
 
   bool ToggleMediapipe(bool enable, std::string* err);
@@ -87,6 +92,7 @@ class VisionEngine : public QObject {
   SessionProfile session_profile_;
   AppState state_ = AppState::kIdle;
   SessionWriter* session_writer_ = nullptr;
+  rkinfra::ZenohPublisher* zenoh_publisher_ = nullptr;
   Callbacks callbacks_;
   FrameConverter frame_converter_;
 

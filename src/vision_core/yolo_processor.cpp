@@ -17,6 +17,7 @@
 #include "mediapipe/common/rknn_model.h"
 #include "mediapipe/preprocess/hw_preprocess.h"
 #include "mediapipe/preprocess/image_ops.h"
+#include "rk_studio/vision_core/coco_labels.h"
 
 namespace rkstudio::vision {
 namespace {
@@ -190,6 +191,16 @@ int InferGridSize(const std::vector<float>& score_sum_output) {
   return grid > 0 && grid * grid == hw ? grid : 0;
 }
 
+std::string ResolveClassName(int class_id, const std::vector<std::string>& class_names) {
+  if (class_id >= 0 && class_id < static_cast<int>(class_names.size())) {
+    return class_names[static_cast<size_t>(class_id)];
+  }
+  if (const char* label = CocoLabel(class_id)) {
+    return label;
+  }
+  return {};
+}
+
 }  // namespace
 
 class YoloProcessor final : public IYoloProcessor {
@@ -323,6 +334,9 @@ class YoloProcessor final : public IYoloProcessor {
     result.detections = Nms(std::move(detections),
                             config_.nms_threshold,
                             config_.max_detections);
+    for (auto& det : result.detections) {
+      det.class_name = ResolveClassName(det.class_id, config_.class_names);
+    }
     const auto finished = std::chrono::steady_clock::now();
     const std::chrono::duration<double> elapsed = finished - started;
     result.fps = elapsed.count() > 0.0 ? static_cast<float>(1.0 / elapsed.count()) : 0.0f;

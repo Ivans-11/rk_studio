@@ -6,6 +6,7 @@
 #include <QtGui/qwindowdefs.h>
 
 #include "rk_studio/domain/types.h"
+#include "rk_studio/infra/zenoh_publisher.h"
 #include "rk_studio/media_core/media_engine.h"
 #include "rk_studio/media_core/vision_engine.h"
 
@@ -23,9 +24,11 @@ class RuntimeManager : public QObject {
   bool StartPreview(std::string* err);
   bool StartRecording(std::string* err);
   bool StartRtsp(std::string* err);
+  bool StartZenoh(std::string* err);
   void StopPreview();
   void StopRecording();
   void StopRtsp();
+  void StopZenoh();
   void StopAll();
 
   void BindPreviewWindow(const std::string& camera_id, WId window_id);
@@ -34,6 +37,7 @@ class RuntimeManager : public QObject {
 
   bool mediapipe_enabled() const;
   bool yolo_enabled() const;
+  bool zenoh_enabled() const;
   const BoardConfig& board_config() const;
   const SessionProfile& session_profile() const;
   AppState state() const { return state_; }
@@ -53,6 +57,7 @@ class RuntimeManager : public QObject {
 
   media::MediaEngine* media_engine_ = nullptr;
   media::VisionEngine* vision_engine_ = nullptr;
+  rkinfra::ZenohPublisher zenoh_publisher_;
   AppState state_ = AppState::kIdle;
 };
 

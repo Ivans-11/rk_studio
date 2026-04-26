@@ -13,8 +13,8 @@
 
 #include "rk_studio/infra/runtime.h"
 #include "rk_studio/infra/session_files.h"
+#include "rk_studio/infra/zenoh_publisher.h"
 #include "rk_studio/media_core/session_writer.h"
-#include "rk_studio/vision_core/coco_labels.h"
 #include "rk_studio/vision_core/vision_processor.h"
 
 namespace rkstudio::media {
@@ -22,6 +22,14 @@ namespace {
 
 constexpr int kMediapipeFps = 15;
 constexpr int kDefaultYoloFps = 5;
+constexpr float kYoloPublishMinScore = 0.7f;
+
+bool CanRunVisionPipeline(AppState state) {
+  return state == AppState::kIdle ||
+         state == AppState::kPreviewing ||
+         state == AppState::kStreaming ||
+         state == AppState::kRecording;
+}
 
 std::string DeriveSelfpathDevice(const std::string& mainpath_device, std::string* err) {
   const std::string prefix = "/dev/video";
@@ -71,8 +79,8 @@ std::string YoloResultToJson(const rkstudio::vision::YoloResult& r) {
     if (i > 0) o << ',';
     const auto& det = r.detections[i];
     o << "{\"class_id\":" << det.class_id;
-    if (const char* label = rkstudio::vision::CocoLabel(det.class_id)) {
-      o << ",\"class_name\":\"" << rkinfra::JsonEscape(label) << '"';
+    if (!det.class_name.empty()) {
+      o << ",\"class_name\":\"" << rkinfra::JsonEscape(det.class_name) << '"';
     }
     o << ",\"score\":" << det.score
       << ",\"box\":[" << det.box.x1 << ',' << det.box.y1
@@ -80,6 +88,18 @@ std::string YoloResultToJson(const rkstudio::vision::YoloResult& r) {
   }
   o << "]}";
   return o.str();
+}
+
+rkstudio::vision::YoloResult FilterYoloResultForOutput(
+    const rkstudio::vision::YoloResult& input) {
+  rkstudio::vision::YoloResult output = input;
+  output.detections.clear();
+  for (const auto& det : input.detections) {
+    if (det.score > kYoloPublishMinScore) {
+      output.detections.push_back(det);
+    }
+  }
+  return output;
 }
 
 }  // namespace
@@ -117,6 +137,10 @@ void VisionEngine::SetSessionWriter(SessionWriter* session_writer) {
   session_writer_ = session_writer;
 }
 
+void VisionEngine::SetZenohPublisher(rkinfra::ZenohPublisher* zenoh_publisher) {
+  zenoh_publisher_ = zenoh_publisher;
+}
+
 void VisionEngine::SetCallbacks(Callbacks callbacks) {
   callbacks_ = std::move(callbacks);
 }
@@ -142,7 +166,7 @@ bool VisionEngine::ToggleMediapipe(bool enable, std::string* err) {
         return false;
       }
     }
-    if (state_ == AppState::kIdle || state_ == AppState::kPreviewing || state_ == AppState::kRecording) {
+    if (CanRunVisionPipeline(state_)) {
       if (!StartMediapipePipeline(err)) {
         mediapipe_enabled_ = false;
         StopMediapipeProcessor();
@@ -183,7 +207,7 @@ bool VisionEngine::ToggleYolo(bool enable, std::string* err) {
       if (err) *err = "failed to start YOLO processor";
       return false;
     }
-    if (state_ == AppState::kIdle || state_ == AppState::kPreviewing || state_ == AppState::kRecording) {
+    if (CanRunVisionPipeline(state_)) {
       if (!StartYoloPipeline(err)) {
         yolo_enabled_ = false;
         StopYoloProcessor();
@@ -398,7 +422,6 @@ void VisionEngine::OnMediapipeSample(GstSample* sample) {
 
   vision::VisionFrame vision_frame;
   vision_frame.rgb = *rgb_frame;
-  vision_frame.raw = frame_converter_.ExtractNv12Frame(sample, camera_id);
   mediapipe_processor_->Submit(vision_frame);
 }
 
@@ -408,8 +431,17 @@ void VisionEngine::PollMediapipeResults() {
   }
 
   while (auto result = mediapipe_processor_->PollResult()) {
-    if (session_writer_ && result->ok) {
-      session_writer_->WriteMediapipeLine(MediapipeResultToJson(*result));
+    std::string payload;
+    const bool has_hands = result->ok && !result->hands.empty();
+    if (session_writer_ && has_hands) {
+      payload = MediapipeResultToJson(*result);
+      session_writer_->WriteMediapipeLine(payload);
+    }
+    if (zenoh_publisher_ && zenoh_publisher_->active() && has_hands) {
+      if (payload.empty()) {
+        payload = MediapipeResultToJson(*result);
+      }
+      zenoh_publisher_->PublishMediapipe(result->camera_id, payload);
     }
 
     emit MediapipeResultReady(*result);
@@ -430,6 +462,7 @@ bool VisionEngine::StartYoloProcessor() {
   config.confidence_threshold = static_cast<float>(yolo_hw.confidence_threshold);
   config.nms_threshold = static_cast<float>(yolo_hw.nms_threshold);
   config.max_detections = yolo_hw.max_detections;
+  config.class_names = yolo_hw.class_names;
 
   yolo_processor_ = vision::CreateYoloProcessor();
   std::string yolo_err;
@@ -523,10 +556,22 @@ void VisionEngine::PollYoloResults() {
     return;
   }
   while (auto result = yolo_processor_->PollResult()) {
-    if (session_writer_ && result->ok) {
-      session_writer_->WriteYoloLine(YoloResultToJson(*result));
+    const vision::YoloResult output_result = result->ok
+        ? FilterYoloResultForOutput(*result)
+        : *result;
+    std::string payload;
+    if (session_writer_ && output_result.ok && !output_result.detections.empty()) {
+      payload = YoloResultToJson(output_result);
+      session_writer_->WriteYoloLine(payload);
     }
-    emit YoloResultReady(*result);
+    if (zenoh_publisher_ && zenoh_publisher_->active() &&
+        output_result.ok && !output_result.detections.empty()) {
+      if (payload.empty()) {
+        payload = YoloResultToJson(output_result);
+      }
+      zenoh_publisher_->PublishYolo(output_result.camera_id, payload);
+    }
+    emit YoloResultReady(output_result);
   }
 }
 

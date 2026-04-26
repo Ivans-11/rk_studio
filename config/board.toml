@@ -1,6 +1,19 @@
 [rtsp]
 mounts = ["cam2"]
 
+[zenoh]
+mode = "peer"
+connect = []
+listen = []
+key_prefix = "rk_studio"
+
+[yolo]
+model = "../models/yolo11n_rk3588_int8.rknn"
+fps = 5
+confidence_threshold = 0.25
+nms_threshold = 0.45
+max_detections = 50
+
 [audio.mic0]
 device = "hw:rockchipes8388,0"
 
