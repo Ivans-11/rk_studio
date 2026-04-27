@@ -105,6 +105,75 @@ float PointDistSq(const cv::Point2f& a, const cv::Point2f& b) {
   return dx * dx + dy * dy;
 }
 
+float PointDist(const cv::Point2f& a, const cv::Point2f& b) {
+  return std::sqrt(PointDistSq(a, b));
+}
+
+float Dot(const cv::Point2f& a, const cv::Point2f& b) {
+  return a.x * b.x + a.y * b.y;
+}
+
+float ProjectFromWrist(const std::vector<cv::Point2f>& points, int index, const cv::Point2f& axis) {
+  return Dot(points[index] - points[0], axis);
+}
+
+float RecognizeThumbsUpScore(const std::vector<cv::Point2f>& points) {
+  if (points.size() < 21) {
+    return 0.0f;
+  }
+
+  const cv::Point2f wrist = points[0];
+  const cv::Point2f middle_mcp = points[9];
+  const float palm_len = PointDist(wrist, middle_mcp);
+  const float palm_width = PointDist(points[5], points[17]);
+  const float palm_size = std::max({palm_len, palm_width, 1.0f});
+  cv::Point2f palm_axis = middle_mcp - wrist;
+  const float axis_len = std::max(PointDist(wrist, middle_mcp), 1.0f);
+  palm_axis.x /= axis_len;
+  palm_axis.y /= axis_len;
+
+  const float thumb_projection = Dot(points[4] - points[2], palm_axis);
+  const bool thumb_extended =
+      thumb_projection > 0.32f * palm_size &&
+      ProjectFromWrist(points, 4, palm_axis) > ProjectFromWrist(points, 3, palm_axis) + 0.08f * palm_size &&
+      PointDist(points[4], points[2]) > 0.35f * palm_size;
+  const bool thumb_points_up = points[4].y < points[2].y - 0.12f * palm_size &&
+                               points[4].y < wrist.y;
+
+  constexpr std::array<std::array<int, 3>, 4> kFingers = {{
+      {{5, 6, 8}},
+      {{9, 10, 12}},
+      {{13, 14, 16}},
+      {{17, 18, 20}},
+  }};
+
+  int folded_count = 0;
+  for (const auto& finger : kFingers) {
+    const int mcp = finger[0];
+    const int pip = finger[1];
+    const int tip = finger[2];
+    const float tip_proj = ProjectFromWrist(points, tip, palm_axis);
+    const float pip_proj = ProjectFromWrist(points, pip, palm_axis);
+    const bool folded_by_axis = tip_proj < pip_proj + 0.08f * palm_size;
+    const bool folded_near_palm = PointDist(points[tip], points[mcp]) < 0.72f * palm_size;
+    if (folded_by_axis || folded_near_palm) {
+      ++folded_count;
+    }
+  }
+
+  if (!thumb_extended || !thumb_points_up || folded_count < 3) {
+    return 0.0f;
+  }
+
+  float score = 0.45f;
+  score += 0.12f * static_cast<float>(folded_count);
+  score += std::min(0.20f, std::max(0.0f, (thumb_projection - 0.32f * palm_size) / palm_size));
+  if (folded_count == 4) {
+    score += 0.08f;
+  }
+  return std::clamp(score, 0.0f, 1.0f);
+}
+
 // Greedy match: assign detections to trackers by nearest ROI center.
 // assignments[tracker_id] = index into detections, or -1 if unmatched.
 std::array<int, kMaxHands> MatchDetectionsToTrackers(
@@ -353,6 +422,10 @@ class MediapipeProcessor final : public IMediapipeProcessor {
         hand.landmarks.reserve(landmarks->points.size());
         for (const auto& point : landmarks->points) {
           hand.landmarks.push_back(Landmark3f{point.x, point.y, point.z});
+        }
+        hand.gesture_score = RecognizeThumbsUpScore(global_points);
+        if (hand.gesture_score > 0.0f) {
+          hand.gesture = "thumbs_up";
         }
         hand.motion_norm = motion_norm;
         hand.rotation_deg = align_rotation_deg;

@@ -94,12 +94,14 @@ void MainWindow::BuildUi() {
   preview_button_ = new QPushButton(QStringLiteral("启动预览"), side_panel);
   record_button_ = new QPushButton(QStringLiteral("启动录制"), side_panel);
   rtsp_button_ = new QPushButton(QStringLiteral("启动 RTSP"), side_panel);
-  zenoh_button_ = new QPushButton(QStringLiteral("启动 Zenoh"), side_panel);
+  entity_registry_button_ = new QPushButton(QStringLiteral("注册实体"), side_panel);
+  result_publish_button_ = new QPushButton(QStringLiteral("发送识别结果"), side_panel);
   mediapipe_toggle_button_ = new QPushButton(QStringLiteral("启动 Mediapipe"), side_panel);
   yolo_toggle_button_ = new QPushButton(QStringLiteral("启动 YOLO"), side_panel);
   record_button_->setEnabled(false);
   rtsp_button_->setEnabled(false);
-  zenoh_button_->setEnabled(false);
+  entity_registry_button_->setEnabled(false);
+  result_publish_button_->setEnabled(false);
   mediapipe_toggle_button_->setEnabled(false);
   yolo_toggle_button_->setEnabled(false);
 
@@ -114,7 +116,8 @@ void MainWindow::BuildUi() {
   side_layout->addWidget(preview_button_);
   side_layout->addWidget(record_button_);
   side_layout->addWidget(rtsp_button_);
-  side_layout->addWidget(zenoh_button_);
+  side_layout->addWidget(entity_registry_button_);
+  side_layout->addWidget(result_publish_button_);
   side_layout->addWidget(mediapipe_toggle_button_);
   side_layout->addWidget(yolo_toggle_button_);
   side_layout->addWidget(state_label_);
@@ -129,7 +132,8 @@ void MainWindow::BuildUi() {
   connect(preview_button_, &QPushButton::clicked, this, &MainWindow::TogglePreview);
   connect(record_button_, &QPushButton::clicked, this, &MainWindow::ToggleRecording);
   connect(rtsp_button_, &QPushButton::clicked, this, &MainWindow::ToggleRtsp);
-  connect(zenoh_button_, &QPushButton::clicked, this, &MainWindow::ToggleZenoh);
+  connect(entity_registry_button_, &QPushButton::clicked, this, &MainWindow::ToggleEntityRegistration);
+  connect(result_publish_button_, &QPushButton::clicked, this, &MainWindow::ToggleResultPublishing);
   connect(mediapipe_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleMediapipe);
   connect(yolo_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleYolo);
 }
@@ -226,15 +230,27 @@ void MainWindow::ToggleRtsp() {
   }
 }
 
-void MainWindow::ToggleZenoh() {
-  if (runtime_manager_->zenoh_enabled()) {
-    runtime_manager_->StopZenoh();
-  } else {
-    std::string err;
-    if (!runtime_manager_->StartZenoh(&err)) {
-      QMessageBox::warning(this, QStringLiteral("Zenoh 失败"), QString::fromStdString(err));
-    }
+void MainWindow::ToggleResultPublishing() {
+  const bool enabling = !runtime_manager_->result_publishing_enabled();
+  std::string err;
+  if (!runtime_manager_->ToggleResultPublishing(&err)) {
+    QMessageBox::warning(this, QStringLiteral("识别结果发送失败"), QString::fromStdString(err));
+    return;
   }
+  AppendLog(enabling ? QStringLiteral("[zenoh] 已开始发送识别结果")
+                     : QStringLiteral("[zenoh] 已停止发送识别结果"));
+  OnStateChanged(runtime_manager_->state());
+}
+
+void MainWindow::ToggleEntityRegistration() {
+  const bool registering = !runtime_manager_->entity_registered();
+  std::string err;
+  if (!runtime_manager_->ToggleEntityRegistration(&err)) {
+    QMessageBox::warning(this, QStringLiteral("实体注册切换失败"), QString::fromStdString(err));
+    return;
+  }
+  AppendLog(registering ? QStringLiteral("[zenoh] 已注册实体: zho/entity/registry")
+                        : QStringLiteral("[zenoh] 已注销实体: zho/entity/registry"));
   OnStateChanged(runtime_manager_->state());
 }
 
@@ -247,7 +263,8 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
     bool record_enabled;
     QString rtsp_text;
     bool rtsp_enabled;
-    bool zenoh_enabled;
+    bool registry_enabled;
+    bool result_publish_enabled;
     bool mediapipe_enabled;
     bool yolo_enabled;
   };
@@ -261,12 +278,14 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         QStringLiteral("启动 RTSP"), true,
         true,
         true,
+        true,
         true};
     t[rkstudio::AppState::kPreviewing] = {
         "Previewing",
         QStringLiteral("关闭预览"), true,
         QStringLiteral("启动录制"), true,
         QStringLiteral("启动 RTSP"), true,
+        true,
         true,
         true,
         true};
@@ -277,6 +296,7 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         {}, false,
         false,
         false,
+        false,
         false};
     t[rkstudio::AppState::kStreaming] = {
         "Streaming",
@@ -285,12 +305,14 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         QStringLiteral("停止 RTSP"), true,
         true,
         true,
+        true,
         true};
     t[rkstudio::AppState::kError] = {
         "Error",
         QStringLiteral("启动预览"), true,
         QStringLiteral("启动录制"), false,
         QStringLiteral("启动 RTSP"), false,
+        false,
         false,
         false,
         false};
@@ -307,12 +329,20 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
   record_button_->setEnabled(row.record_enabled);
   if (!row.rtsp_text.isEmpty()) rtsp_button_->setText(row.rtsp_text);
   rtsp_button_->setEnabled(row.rtsp_enabled);
-  zenoh_button_->setText(runtime_manager_->zenoh_enabled() ? QStringLiteral("关闭 Zenoh")
-                                                           : QStringLiteral("启动 Zenoh"));
-  zenoh_button_->setEnabled(row.zenoh_enabled &&
-                            (runtime_manager_->zenoh_enabled() ||
-                             runtime_manager_->mediapipe_enabled() ||
-                             runtime_manager_->yolo_enabled()));
+  entity_registry_button_->setText(runtime_manager_->entity_registered()
+                                       ? QStringLiteral("注销实体")
+                                       : QStringLiteral("注册实体"));
+  entity_registry_button_->setEnabled(row.registry_enabled &&
+                                      runtime_manager_->board_config().zenoh.has_value());
+  result_publish_button_->setText(runtime_manager_->result_publishing_enabled()
+                                      ? QStringLiteral("停止识别结果")
+                                      : QStringLiteral("发送识别结果"));
+  result_publish_button_->setEnabled(
+      row.result_publish_enabled &&
+      runtime_manager_->board_config().zenoh.has_value() &&
+      (runtime_manager_->result_publishing_enabled() ||
+       runtime_manager_->mediapipe_enabled() ||
+       runtime_manager_->yolo_enabled()));
   mediapipe_toggle_button_->setText(runtime_manager_->mediapipe_enabled() ? QStringLiteral("关闭 Mediapipe")
                                                                        : QStringLiteral("启动 Mediapipe"));
   yolo_toggle_button_->setText(runtime_manager_->yolo_enabled() ? QStringLiteral("关闭 YOLO")

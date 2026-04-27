@@ -24,11 +24,12 @@ class RuntimeManager : public QObject {
   bool StartPreview(std::string* err);
   bool StartRecording(std::string* err);
   bool StartRtsp(std::string* err);
-  bool StartZenoh(std::string* err);
+  bool ToggleResultPublishing(std::string* err);
+  bool ToggleEntityRegistration(std::string* err);
   void StopPreview();
   void StopRecording();
   void StopRtsp();
-  void StopZenoh();
+  void StopResultPublishing();
   void StopAll();
 
   void BindPreviewWindow(const std::string& camera_id, WId window_id);
@@ -38,6 +39,8 @@ class RuntimeManager : public QObject {
   bool mediapipe_enabled() const;
   bool yolo_enabled() const;
   bool zenoh_enabled() const;
+  bool result_publishing_enabled() const;
+  bool entity_registered() const;
   const BoardConfig& board_config() const;
   const SessionProfile& session_profile() const;
   AppState state() const { return state_; }
@@ -51,6 +54,9 @@ class RuntimeManager : public QObject {
 
  private:
   void SetState(AppState state);
+  bool EnsureZenohStarted(std::string* err);
+  bool PublishEntityRegistrationAction(const std::string& action, std::string* err);
+  void StopZenohIfIdle();
   void EnterErrorState();
   void OnVisionCameraError(const std::string& camera_id, const std::string& reason, bool fatal);
   void OnFatalCameraFailure();
@@ -58,6 +64,7 @@ class RuntimeManager : public QObject {
   media::MediaEngine* media_engine_ = nullptr;
   media::VisionEngine* vision_engine_ = nullptr;
   rkinfra::ZenohPublisher zenoh_publisher_;
+  bool entity_registered_ = false;
   AppState state_ = AppState::kIdle;
 };
 

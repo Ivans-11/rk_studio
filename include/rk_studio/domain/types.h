@@ -63,6 +63,13 @@ struct ZenohConfig {
   std::string key_prefix = "rk_studio";
 };
 
+struct EntityRegistrationConfig {
+  std::string entity_id = "helmet_001";
+  std::string display_name = "张三的头盔";
+  std::string owner = "human_zhangsan_001";
+  std::string device_type = "helmet";
+};
+
 struct BoardConfig {
   std::vector<CameraNodeSet> cameras;
   std::vector<AudioSource> audio_sources;
@@ -71,6 +78,7 @@ struct BoardConfig {
   std::optional<YoloHardwareConfig> yolo;
   std::optional<RtspConfig> rtsp;
   std::optional<ZenohConfig> zenoh;
+  EntityRegistrationConfig entity_registration;
 };
 
 struct SessionProfile {

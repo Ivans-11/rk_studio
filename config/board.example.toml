@@ -7,6 +7,12 @@ connect = []
 listen = []
 key_prefix = "rk_studio"
 
+[entity]
+entity_id = "helmet_001"
+display_name = "张三的头盔"
+owner = "human_zhangsan_001"
+device_type = "helmet"
+
 [yolo]
 model = "../models/yolo11n_rk3588_int8.rknn"
 fps = 5

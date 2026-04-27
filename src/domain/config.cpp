@@ -202,6 +202,14 @@ bool ValidateBoardConfig(const BoardConfig& config, std::string* err) {
       return false;
     }
   }
+  const auto& entity = config.entity_registration;
+  if (entity.entity_id.empty() || entity.display_name.empty() ||
+      entity.owner.empty() || entity.device_type.empty()) {
+    if (err) {
+      *err = "entity registration fields must not be empty";
+    }
+    return false;
+  }
   return true;
 }
 
@@ -416,6 +424,22 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
       return false;
     }
     parsed.zenoh = zenoh;
+  }
+
+  if (const auto* entity_table = root["entity"].as_table()) {
+    static const std::unordered_set<std::string> kAllowed{
+        "entity_id", "display_name", "owner", "device_type"};
+    if (!RejectUnknownKeys(*entity_table, kAllowed, "entity", err)) {
+      return false;
+    }
+    EntityRegistrationConfig entity;
+    if (!AssignValue(*entity_table, "entity_id", &entity.entity_id, "entity", err) ||
+        !AssignValue(*entity_table, "display_name", &entity.display_name, "entity", err) ||
+        !AssignValue(*entity_table, "owner", &entity.owner, "entity", err) ||
+        !AssignValue(*entity_table, "device_type", &entity.device_type, "entity", err)) {
+      return false;
+    }
+    parsed.entity_registration = entity;
   }
 
   if (!ValidateBoardConfig(parsed, err)) {

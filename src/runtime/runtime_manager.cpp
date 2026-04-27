@@ -1,6 +1,57 @@
 #include "rk_studio/runtime/runtime_manager.h"
 
+#include <cstddef>
+#include <sstream>
+#include <string>
+#include <vector>
+
 namespace rkstudio::runtime {
+namespace {
+
+constexpr const char* kEntityRegistryTopic = "zho/entity/registry";
+
+std::string NormalizeZenohPrefix(std::string prefix) {
+  while (!prefix.empty() && prefix.front() == '/') {
+    prefix.erase(prefix.begin());
+  }
+  while (!prefix.empty() && prefix.back() == '/') {
+    prefix.pop_back();
+  }
+  return prefix.empty() ? "rk_studio" : prefix;
+}
+
+std::string JsonString(const std::string& value) {
+  std::ostringstream out;
+  out << '"';
+  for (const char ch : value) {
+    switch (ch) {
+      case '\\': out << "\\\\"; break;
+      case '"': out << "\\\""; break;
+      case '\b': out << "\\b"; break;
+      case '\f': out << "\\f"; break;
+      case '\n': out << "\\n"; break;
+      case '\r': out << "\\r"; break;
+      case '\t': out << "\\t"; break;
+      default: out << ch; break;
+    }
+  }
+  out << '"';
+  return out.str();
+}
+
+std::string JoinStrings(const std::vector<std::string>& values, const std::string& separator) {
+  std::ostringstream out;
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) {
+      out << separator;
+    }
+    out << values[i];
+  }
+  return out.str();
+}
+
+}  // namespace
+
 RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
   qRegisterMetaType<rkstudio::AppState>();
   qRegisterMetaType<rkstudio::TelemetryEvent>();
@@ -115,22 +166,107 @@ bool RuntimeManager::StartRtsp(std::string* err) {
   return true;
 }
 
-bool RuntimeManager::StartZenoh(std::string* err) {
-  if (state_ != AppState::kIdle &&
-      state_ != AppState::kPreviewing &&
-      state_ != AppState::kStreaming) {
-    if (err) *err = "cannot start Zenoh in current state";
-    return false;
-  }
-  if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
-    if (err) *err = "start Mediapipe or YOLO before starting Zenoh";
-    return false;
+bool RuntimeManager::EnsureZenohStarted(std::string* err) {
+  if (zenoh_publisher_.active()) {
+    return true;
   }
   if (!media_engine_->board_config().zenoh.has_value()) {
     if (err) *err = "no [zenoh] section in board config";
     return false;
   }
   return zenoh_publisher_.Start(*media_engine_->board_config().zenoh, err);
+}
+
+bool RuntimeManager::ToggleResultPublishing(std::string* err) {
+  if (state_ != AppState::kIdle &&
+      state_ != AppState::kPreviewing &&
+      state_ != AppState::kStreaming) {
+    if (err) *err = "cannot change result publishing in current state";
+    return false;
+  }
+
+  if (zenoh_publisher_.result_publishing_enabled()) {
+    StopResultPublishing();
+    return true;
+  }
+
+  if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
+    if (err) *err = "start Mediapipe or YOLO before publishing recognition results";
+    return false;
+  }
+  if (!EnsureZenohStarted(err)) {
+    return false;
+  }
+  zenoh_publisher_.SetResultPublishingEnabled(true);
+  return true;
+}
+
+bool RuntimeManager::ToggleEntityRegistration(std::string* err) {
+  if (state_ != AppState::kIdle &&
+      state_ != AppState::kPreviewing &&
+      state_ != AppState::kStreaming) {
+    if (err) *err = "cannot change entity registration in current state";
+    return false;
+  }
+  if (!EnsureZenohStarted(err)) {
+    return false;
+  }
+  const char* action = entity_registered_ ? "REG_UNREGISTER" : "REG_REGISTER";
+  if (!PublishEntityRegistrationAction(action, err)) {
+    StopZenohIfIdle();
+    return false;
+  }
+  entity_registered_ = !entity_registered_;
+  StopZenohIfIdle();
+  return true;
+}
+
+bool RuntimeManager::PublishEntityRegistrationAction(
+    const std::string& action,
+    std::string* err) {
+  if (!media_engine_->board_config().zenoh.has_value()) {
+    if (err) *err = "no [zenoh] section in board config";
+    return false;
+  }
+
+  const auto& profile = media_engine_->session_profile();
+  const auto& entity = media_engine_->board_config().entity_registration;
+  const std::string key_prefix =
+      NormalizeZenohPrefix(media_engine_->board_config().zenoh->key_prefix);
+  std::vector<std::string> channels;
+  if (vision_engine_->mediapipe_enabled() && !profile.selected_mediapipe_camera.empty()) {
+    channels.push_back(key_prefix + "/mediapipe/" +
+                       profile.selected_mediapipe_camera + "/hands");
+  }
+  if (vision_engine_->yolo_enabled() && !profile.selected_yolo_camera.empty()) {
+    channels.push_back(key_prefix + "/yolo/" + profile.selected_yolo_camera +
+                       "/objects");
+  }
+
+  std::ostringstream payload;
+  payload << "{"
+          << "\"_type\":" << JsonString("ObjectRegistration") << ","
+          << "\"entity_id\":" << JsonString(entity.entity_id) << ","
+          << "\"display_name\":" << JsonString(entity.display_name) << ","
+          << "\"action\":" << JsonString(action) << ","
+          << "\"metadata\":{"
+          << "\"owner\":" << JsonString(entity.owner) << ","
+          << "\"device_type\":" << JsonString(entity.device_type) << ","
+          << "\"provides_channels\":" << JsonString(JoinStrings(channels, ","))
+          << "}"
+          << "}";
+
+  if (!zenoh_publisher_.PublishJson(kEntityRegistryTopic, payload.str())) {
+    if (err) *err = "failed to publish entity registration";
+    return false;
+  }
+  return true;
+}
+
+void RuntimeManager::StopZenohIfIdle() {
+  if (!entity_registered_ && !zenoh_publisher_.result_publishing_enabled()) {
+    zenoh_publisher_.Stop();
+  }
 }
 
 void RuntimeManager::StopRecording() {
@@ -164,14 +300,16 @@ void RuntimeManager::StopRtsp() {
   SetState(AppState::kIdle);
 }
 
-void RuntimeManager::StopZenoh() {
+void RuntimeManager::StopResultPublishing() {
   if (state_ == AppState::kRecording) {
     return;
   }
-  zenoh_publisher_.Stop();
+  zenoh_publisher_.SetResultPublishingEnabled(false);
+  StopZenohIfIdle();
 }
 
 void RuntimeManager::StopAll() {
+  entity_registered_ = false;
   zenoh_publisher_.Stop();
   if (state_ == AppState::kRecording) {
     vision_engine_->StopAll();
@@ -202,7 +340,7 @@ bool RuntimeManager::ToggleMediapipe(bool enable, std::string* err) {
     return false;
   }
   if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
-    zenoh_publisher_.Stop();
+    StopResultPublishing();
   }
   return true;
 }
@@ -218,7 +356,7 @@ bool RuntimeManager::ToggleYolo(bool enable, std::string* err) {
     return false;
   }
   if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
-    zenoh_publisher_.Stop();
+    StopResultPublishing();
   }
   return true;
 }
@@ -233,6 +371,14 @@ bool RuntimeManager::yolo_enabled() const {
 
 bool RuntimeManager::zenoh_enabled() const {
   return zenoh_publisher_.active();
+}
+
+bool RuntimeManager::result_publishing_enabled() const {
+  return zenoh_publisher_.result_publishing_enabled();
+}
+
+bool RuntimeManager::entity_registered() const {
+  return entity_registered_;
 }
 
 const BoardConfig& RuntimeManager::board_config() const {

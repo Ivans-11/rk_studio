@@ -91,6 +91,7 @@ class ZenohPublisher::Impl {
       z_drop(z_move(session_));
       active_ = false;
     }
+    result_publishing_enabled_ = false;
     key_prefix_.clear();
   }
 
@@ -99,12 +100,26 @@ class ZenohPublisher::Impl {
     return active_;
   }
 
+  void SetResultPublishingEnabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(mu_);
+    result_publishing_enabled_ = enabled;
+  }
+
+  bool result_publishing_enabled() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return result_publishing_enabled_;
+  }
+
   bool PublishMediapipe(const std::string& camera_id, const std::string& payload) {
     return Publish(key_prefix_ + "/mediapipe/" + camera_id + "/hands", payload);
   }
 
   bool PublishYolo(const std::string& camera_id, const std::string& payload) {
     return Publish(key_prefix_ + "/yolo/" + camera_id + "/objects", payload);
+  }
+
+  bool PublishJson(const std::string& key, const std::string& payload) {
+    return Publish(key, payload);
   }
 
  private:
@@ -142,6 +157,7 @@ class ZenohPublisher::Impl {
   mutable std::mutex mu_;
   z_owned_session_t session_;
   bool active_ = false;
+  bool result_publishing_enabled_ = false;
   std::string key_prefix_;
 };
 
@@ -161,12 +177,24 @@ bool ZenohPublisher::active() const {
   return impl_->active();
 }
 
+void ZenohPublisher::SetResultPublishingEnabled(bool enabled) {
+  impl_->SetResultPublishingEnabled(enabled);
+}
+
+bool ZenohPublisher::result_publishing_enabled() const {
+  return impl_->result_publishing_enabled();
+}
+
 bool ZenohPublisher::PublishMediapipe(const std::string& camera_id, const std::string& payload) {
   return impl_->PublishMediapipe(camera_id, payload);
 }
 
 bool ZenohPublisher::PublishYolo(const std::string& camera_id, const std::string& payload) {
   return impl_->PublishYolo(camera_id, payload);
+}
+
+bool ZenohPublisher::PublishJson(const std::string& key, const std::string& payload) {
+  return impl_->PublishJson(key, payload);
 }
 
 }  // namespace rkinfra

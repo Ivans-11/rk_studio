@@ -62,6 +62,8 @@ struct HandResult {
   int hand_id = -1;
   std::optional<RoiRect> roi;
   std::vector<Landmark3f> landmarks;
+  std::string gesture;
+  float gesture_score = 0.0f;
   TrackingMode tracking_mode = TrackingMode::kNoHand;
   float motion_norm = 0.0f;
   float rotation_deg = 0.0f;

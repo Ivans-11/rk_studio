@@ -148,7 +148,24 @@ class ResultOverlayWidget final : public QWidget {
         const QRectF roi_rect(
             MapPoint(target, source_w, source_h, static_cast<float>(roi.x1), static_cast<float>(roi.y1)),
             MapPoint(target, source_w, source_h, static_cast<float>(roi.x2), static_cast<float>(roi.y2)));
-        painter.drawRect(roi_rect.normalized());
+        const QRectF normalized = roi_rect.normalized();
+        painter.drawRect(normalized);
+
+        if (!hand.gesture.empty()) {
+          painter.setFont(QFont(painter.font().family(), 10, QFont::DemiBold));
+          const QString label = QString("%1  %2")
+                                    .arg(QString::fromStdString(hand.gesture))
+                                    .arg(hand.gesture_score, 0, 'f', 2);
+          const QRect label_rect = painter.fontMetrics().boundingRect(label).adjusted(-4, -2, 4, 2);
+          QRectF label_box(normalized.left(), normalized.top() - label_rect.height(),
+                           label_rect.width(), label_rect.height());
+          if (label_box.top() < target.top()) {
+            label_box.moveTop(normalized.top());
+          }
+          painter.fillRect(label_box, roi_color);
+          painter.setPen(Qt::black);
+          painter.drawText(label_box.adjusted(4, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft, label);
+        }
       }
 
       painter.setPen(Qt::NoPen);

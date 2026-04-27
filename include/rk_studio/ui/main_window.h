@@ -24,7 +24,8 @@ class MainWindow : public QMainWindow {
   void TogglePreview();
   void ToggleRecording();
   void ToggleRtsp();
-  void ToggleZenoh();
+  void ToggleResultPublishing();
+  void ToggleEntityRegistration();
   void ToggleMediapipe();
   void ToggleYolo();
   void OnStateChanged(rkstudio::AppState state);
@@ -51,7 +52,8 @@ class MainWindow : public QMainWindow {
   QPushButton* preview_button_ = nullptr;
   QPushButton* record_button_ = nullptr;
   QPushButton* rtsp_button_ = nullptr;
-  QPushButton* zenoh_button_ = nullptr;
+  QPushButton* entity_registry_button_ = nullptr;
+  QPushButton* result_publish_button_ = nullptr;
   QPushButton* mediapipe_toggle_button_ = nullptr;
   QPushButton* yolo_toggle_button_ = nullptr;
   QPlainTextEdit* log_view_ = nullptr;

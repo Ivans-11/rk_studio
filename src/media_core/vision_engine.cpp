@@ -52,18 +52,16 @@ std::string MediapipeResultToJson(const rkstudio::vision::MediapipeResult& r) {
   std::ostringstream o;
   o << "{\"camera_id\":\"" << rkinfra::JsonEscape(r.camera_id)
     << "\",\"pts_ns\":" << r.pts_ns
-    << ",\"size\":[" << r.frame_width << ',' << r.frame_height << ']'
     << ",\"hands\":[";
   for (size_t h = 0; h < r.hands.size(); ++h) {
     if (h > 0) o << ',';
     const auto& hand = r.hands[h];
-    o << "{\"id\":" << hand.hand_id << ",\"landmarks\":[";
-    for (size_t i = 0; i < hand.landmarks.size(); ++i) {
-      if (i > 0) o << ',';
-      o << '[' << hand.landmarks[i].x << ',' << hand.landmarks[i].y
-        << ',' << hand.landmarks[i].z << ']';
+    o << "{\"id\":" << hand.hand_id;
+    if (!hand.gesture.empty()) {
+      o << ",\"gesture\":\"" << rkinfra::JsonEscape(hand.gesture)
+        << "\",\"gesture_score\":" << hand.gesture_score;
     }
-    o << "]}";
+    o << '}';
   }
   o << "]}";
   return o.str();
@@ -437,7 +435,8 @@ void VisionEngine::PollMediapipeResults() {
       payload = MediapipeResultToJson(*result);
       session_writer_->WriteMediapipeLine(payload);
     }
-    if (zenoh_publisher_ && zenoh_publisher_->active() && has_hands) {
+    if (zenoh_publisher_ && zenoh_publisher_->active() &&
+        zenoh_publisher_->result_publishing_enabled() && has_hands) {
       if (payload.empty()) {
         payload = MediapipeResultToJson(*result);
       }
@@ -565,6 +564,7 @@ void VisionEngine::PollYoloResults() {
       session_writer_->WriteYoloLine(payload);
     }
     if (zenoh_publisher_ && zenoh_publisher_->active() &&
+        zenoh_publisher_->result_publishing_enabled() &&
         output_result.ok && !output_result.detections.empty()) {
       if (payload.empty()) {
         payload = YoloResultToJson(output_result);
