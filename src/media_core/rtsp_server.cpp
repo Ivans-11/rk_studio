@@ -1,10 +1,13 @@
 #include "rk_studio/media_core/rtsp_server.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -12,7 +15,10 @@
 #include <gst/app/gstappsrc.h>
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
+#include "mediapipe/preprocess/hw_preprocess.h"
 #include "rk_studio/media_core/v4l2_pipeline.h"
 
 namespace rkstudio::media {
@@ -104,9 +110,183 @@ std::string NormalizeMount(std::string mount) {
   return mount;
 }
 
+int ClampInt(int value, int min_value, int max_value) {
+  return std::clamp(value, min_value, max_value);
+}
+
+cv::Point MapOverlayPoint(float x,
+                          float y,
+                          int source_w,
+                          int source_h,
+                          int target_w,
+                          int target_h) {
+  const float scale_x = target_w > 0 && source_w > 0
+                            ? static_cast<float>(target_w) / source_w
+                            : 1.0f;
+  const float scale_y = target_h > 0 && source_h > 0
+                            ? static_cast<float>(target_h) / source_h
+                            : 1.0f;
+  return cv::Point(
+      ClampInt(static_cast<int>(std::round(x * scale_x)), 0, std::max(0, target_w - 1)),
+      ClampInt(static_cast<int>(std::round(y * scale_y)), 0, std::max(0, target_h - 1)));
+}
+
+cv::Rect MapOverlayRect(const vision::RoiRect& rect,
+                        int source_w,
+                        int source_h,
+                        int target_w,
+                        int target_h) {
+  const cv::Point p1 = MapOverlayPoint(static_cast<float>(rect.x1),
+                                       static_cast<float>(rect.y1),
+                                       source_w,
+                                       source_h,
+                                       target_w,
+                                       target_h);
+  const cv::Point p2 = MapOverlayPoint(static_cast<float>(rect.x2),
+                                       static_cast<float>(rect.y2),
+                                       source_w,
+                                       source_h,
+                                       target_w,
+                                       target_h);
+  return cv::Rect(p1, p2) & cv::Rect(0, 0, target_w, target_h);
+}
+
+void DrawLabel(cv::Mat& rgb,
+               const std::string& text,
+               const cv::Point& anchor,
+               const cv::Scalar& color) {
+  if (text.empty()) {
+    return;
+  }
+
+  int baseline = 0;
+  const double font_scale = 0.45;
+  const int thickness = 1;
+  const cv::Size text_size =
+      cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, font_scale, thickness, &baseline);
+  const int x = ClampInt(anchor.x, 0, std::max(0, rgb.cols - text_size.width - 4));
+  int y = anchor.y - text_size.height - 6;
+  if (y < 0) {
+    y = ClampInt(anchor.y + text_size.height + 6, text_size.height + 4, rgb.rows - 1);
+  }
+
+  cv::Rect box(x, y - text_size.height - 3, text_size.width + 6, text_size.height + 6);
+  box &= cv::Rect(0, 0, rgb.cols, rgb.rows);
+  if (box.width > 0 && box.height > 0) {
+    cv::rectangle(rgb, box, color, cv::FILLED);
+  }
+  cv::putText(rgb,
+              text,
+              cv::Point(x + 3, y),
+              cv::FONT_HERSHEY_SIMPLEX,
+              font_scale,
+              cv::Scalar(0, 0, 0),
+              thickness,
+              cv::LINE_AA);
+}
+
+void DrawMediapipeOverlay(cv::Mat& rgb, const vision::MediapipeResult& result) {
+  if (!result.ok || result.hands.empty()) {
+    return;
+  }
+
+  static constexpr std::array<std::array<int, 2>, 24> kHandEdges{{
+      {{0, 1}}, {{1, 2}}, {{2, 3}}, {{3, 4}},
+      {{0, 5}}, {{5, 6}}, {{6, 7}}, {{7, 8}},
+      {{0, 9}}, {{9, 10}}, {{10, 11}}, {{11, 12}},
+      {{0, 13}}, {{13, 14}}, {{14, 15}}, {{15, 16}},
+      {{0, 17}}, {{17, 18}}, {{18, 19}}, {{19, 20}},
+      {{5, 9}}, {{9, 13}}, {{13, 17}}, {{5, 17}},
+  }};
+  static const cv::Scalar kRoiColors[] = {
+      cv::Scalar(255, 160, 0), cv::Scalar(0, 160, 255)};
+  static const cv::Scalar kLandmarkColors[] = {
+      cv::Scalar(0, 255, 100), cv::Scalar(255, 100, 200)};
+
+  const int source_w = result.frame_width > 0 ? result.frame_width : rgb.cols;
+  const int source_h = result.frame_height > 0 ? result.frame_height : rgb.rows;
+  for (size_t i = 0; i < result.hands.size(); ++i) {
+    const auto& hand = result.hands[i];
+    const cv::Scalar roi_color = kRoiColors[i % 2];
+    const cv::Scalar point_color = kLandmarkColors[i % 2];
+
+    if (hand.roi.has_value()) {
+      const cv::Rect roi =
+          MapOverlayRect(*hand.roi, source_w, source_h, rgb.cols, rgb.rows);
+      if (roi.width > 0 && roi.height > 0) {
+        cv::rectangle(rgb, roi, roi_color, 2, cv::LINE_AA);
+        if (!hand.gesture.empty()) {
+          std::ostringstream label;
+          label.setf(std::ios::fixed);
+          label.precision(2);
+          label << hand.gesture << " " << hand.gesture_score;
+          DrawLabel(rgb, label.str(), roi.tl(), roi_color);
+        }
+      }
+    }
+
+    std::vector<cv::Point> points;
+    points.reserve(hand.landmarks.size());
+    for (const auto& landmark : hand.landmarks) {
+      points.push_back(MapOverlayPoint(landmark.x,
+                                       landmark.y,
+                                       source_w,
+                                       source_h,
+                                       rgb.cols,
+                                       rgb.rows));
+    }
+
+    for (const auto& edge : kHandEdges) {
+      if (edge[0] >= static_cast<int>(points.size()) ||
+          edge[1] >= static_cast<int>(points.size())) {
+        continue;
+      }
+      cv::line(rgb, points[edge[0]], points[edge[1]], roi_color, 2, cv::LINE_AA);
+    }
+    for (const auto& point : points) {
+      cv::circle(rgb, point, 3, point_color, cv::FILLED, cv::LINE_AA);
+    }
+  }
+}
+
+void DrawYoloOverlay(cv::Mat& rgb, const vision::YoloResult& result) {
+  if (!result.ok || result.detections.empty()) {
+    return;
+  }
+
+  static const cv::Scalar kBoxColors[] = {
+      cv::Scalar(0, 220, 140),
+      cv::Scalar(255, 180, 0),
+      cv::Scalar(0, 180, 255),
+      cv::Scalar(255, 90, 160),
+  };
+
+  const int source_w = result.frame_width > 0 ? result.frame_width : rgb.cols;
+  const int source_h = result.frame_height > 0 ? result.frame_height : rgb.rows;
+  for (size_t i = 0; i < result.detections.size(); ++i) {
+    const auto& det = result.detections[i];
+    const cv::Scalar color = kBoxColors[i % 4];
+    const cv::Rect box =
+        MapOverlayRect(det.box, source_w, source_h, rgb.cols, rgb.rows);
+    if (box.width <= 0 || box.height <= 0) {
+      continue;
+    }
+    cv::rectangle(rgb, box, color, 2, cv::LINE_AA);
+
+    std::ostringstream label;
+    label.setf(std::ios::fixed);
+    label.precision(2);
+    label << (det.class_name.empty() ? ("#" + std::to_string(det.class_id))
+                                     : det.class_name)
+          << " " << det.score;
+    DrawLabel(rgb, label.str(), box.tl(), color);
+  }
+}
+
 }  // namespace
 
 struct RtspServer::CameraStream {
+  RtspServer* owner = nullptr;
   std::string mount;
   std::string camera_id;
   std::string appsrc_name = "src";
@@ -130,6 +310,105 @@ struct RtspServer::RtspRoute {
 };
 
 RtspServer::~RtspServer() { Stop(); }
+
+void RtspServer::UpdateMediapipeResult(const vision::MediapipeResult& result) {
+  if (result.camera_id.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  mediapipe_results_[result.camera_id] = result;
+}
+
+void RtspServer::UpdateYoloResult(const vision::YoloResult& result) {
+  if (result.camera_id.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  yolo_results_[result.camera_id] = result;
+}
+
+void RtspServer::ClearMediapipeResult(const std::string& camera_id) {
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  mediapipe_results_.erase(camera_id);
+}
+
+void RtspServer::ClearYoloResult(const std::string& camera_id) {
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  yolo_results_.erase(camera_id);
+}
+
+std::optional<vision::MediapipeResult> RtspServer::LatestMediapipeResult(
+    const std::string& camera_id) const {
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  auto it = mediapipe_results_.find(camera_id);
+  if (it == mediapipe_results_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+std::optional<vision::YoloResult> RtspServer::LatestYoloResult(
+    const std::string& camera_id) const {
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  auto it = yolo_results_.find(camera_id);
+  if (it == yolo_results_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+GstBuffer* RtspServer::BuildOverlayBuffer(CameraStream* stream, GstSample* sample) const {
+  if (stream == nullptr || sample == nullptr) {
+    return nullptr;
+  }
+
+  GstBuffer* input = gst_sample_get_buffer(sample);
+  if (input == nullptr) {
+    return nullptr;
+  }
+
+  const auto mediapipe_result = LatestMediapipeResult(stream->camera_id);
+  const auto yolo_result = LatestYoloResult(stream->camera_id);
+  const bool has_mediapipe_overlay =
+      mediapipe_result.has_value() && mediapipe_result->ok &&
+      !mediapipe_result->hands.empty();
+  const bool has_yolo_overlay =
+      yolo_result.has_value() && yolo_result->ok &&
+      !yolo_result->detections.empty();
+  if (!has_mediapipe_overlay && !has_yolo_overlay) {
+    return gst_buffer_copy(input);
+  }
+
+  auto rgb_frame = frame_converter_.ConvertToRgbFrame(sample, stream->camera_id);
+  if (!rgb_frame.has_value() || !rgb_frame->owned_data) {
+    return gst_buffer_copy(input);
+  }
+
+  auto rgb_holder = std::static_pointer_cast<cv::Mat>(rgb_frame->owned_data);
+  if (!rgb_holder || rgb_holder->empty()) {
+    return gst_buffer_copy(input);
+  }
+
+  if (has_mediapipe_overlay) {
+    DrawMediapipeOverlay(*rgb_holder, *mediapipe_result);
+  }
+  if (has_yolo_overlay) {
+    DrawYoloOverlay(*rgb_holder, *yolo_result);
+  }
+
+  cv::Mat nv12;
+  if (!mediapipe_demo::ConvertRgbToNv12(*rgb_holder, &nv12) || nv12.empty()) {
+    return gst_buffer_copy(input);
+  }
+
+  const size_t bytes = nv12.total() * nv12.elemSize();
+  GstBuffer* output = gst_buffer_new_allocate(nullptr, bytes, nullptr);
+  if (output == nullptr) {
+    return nullptr;
+  }
+  gst_buffer_fill(output, 0, nv12.data, bytes);
+  return output;
+}
 
 void RtspServer::StopCameraStreams() {
   for (auto& [_, stream] : camera_streams_) {
@@ -334,7 +613,9 @@ void RtspServer::PushRtspSample(CameraStream* stream, GstSample* sample) {
     }
   }
 
-  GstBuffer* output = gst_buffer_copy(input);
+  GstBuffer* output = stream->owner != nullptr
+      ? stream->owner->BuildOverlayBuffer(stream, sample)
+      : gst_buffer_copy(input);
   if (output == nullptr) {
     gst_object_unref(appsrc);
     return;
@@ -409,6 +690,7 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
                                 int height,
                                 int bitrate) -> CameraStream* {
     auto stream = std::make_shared<CameraStream>();
+    stream->owner = this;
     stream->mount = route_mount;
     stream->camera_id = cam.id;
     stream->appsrc_name = appsrc_name;

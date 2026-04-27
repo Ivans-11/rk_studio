@@ -1,5 +1,5 @@
 [rtsp]
-mounts = ["cam2"]
+mounts = ["cam0"]
 
 [zenoh]
 mode = "peer"

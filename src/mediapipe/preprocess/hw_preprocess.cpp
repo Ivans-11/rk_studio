@@ -460,4 +460,69 @@ bool ConvertNv12ToRgb(int dmabuf_fd, int width, int height, int stride,
 #endif
 }
 
+bool ConvertRgbToNv12(const cv::Mat& rgb, cv::Mat* nv12_out) {
+  std::lock_guard<std::mutex> lock(g_hw_preprocess_mutex);
+
+  if (rgb.empty() || nv12_out == nullptr ||
+      rgb.type() != CV_8UC3 || rgb.cols <= 0 || rgb.rows <= 0) {
+    return false;
+  }
+  if (!g_hw_preprocess_available) {
+    return false;
+  }
+
+#if !defined(__linux__)
+  return false;
+#else
+  const int width = rgb.cols;
+  const int height = rgb.rows;
+  const int src_stride = static_cast<int>(rgb.step[0] / rgb.elemSize());
+  const size_t dst_size = static_cast<size_t>(width) * height * 3 / 2;
+  ScratchDmabuf* scratch = AcquireScratchBuffer(dst_size,
+                                                width, height,
+                                                width, height,
+                                                RK_FORMAT_YCbCr_420_SP);
+  if (scratch == nullptr) {
+    return false;
+  }
+
+  rga_buffer_t src = wrapbuffer_virtualaddr(rgb.data,
+                                            width,
+                                            height,
+                                            src_stride,
+                                            height,
+                                            RK_FORMAT_RGB_888);
+  rga_buffer_t dst = wrapbuffer_fd_t(scratch->fd(),
+                                     scratch->width(),
+                                     scratch->height(),
+                                     scratch->wstride(),
+                                     scratch->hstride(),
+                                     scratch->format());
+
+  im_rect srect{0, 0, width, height};
+  im_rect drect{0, 0, width, height};
+  im_rect prect{0, 0, 0, 0};
+  rga_buffer_t pat;
+  std::memset(&pat, 0, sizeof(pat));
+
+  const IM_STATUS check = imcheck_t(src, dst, pat, srect, drect, prect, 0);
+  if (!IsRgaSuccess(check)) {
+    std::cerr << "RGA ConvertRgbToNv12 imcheck failed: "
+              << imStrError(check) << "\n";
+    return false;
+  }
+
+  const IM_STATUS status = improcess(src, dst, pat, srect, drect, prect, 0);
+  if (!IsRgaSuccess(status)) {
+    std::cerr << "RGA ConvertRgbToNv12 improcess failed: "
+              << imStrError(status) << "\n";
+    return false;
+  }
+
+  cv::Mat nv12(height * 3 / 2, width, CV_8UC1, scratch->addr(), width);
+  *nv12_out = nv12.clone();
+  return true;
+#endif
+}
+
 }  // namespace mediapipe_demo

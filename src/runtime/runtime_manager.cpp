@@ -70,9 +70,15 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
           this, &RuntimeManager::OnFatalCameraFailure);
 
   connect(vision_engine_, &media::VisionEngine::MediapipeResultReady,
-          this, &RuntimeManager::MediapipeResultReady);
+          this, [this](const vision::MediapipeResult& result) {
+            media_engine_->UpdateMediapipeResult(result);
+            emit MediapipeResultReady(result);
+          });
   connect(vision_engine_, &media::VisionEngine::YoloResultReady,
-          this, &RuntimeManager::YoloResultReady);
+          this, [this](const vision::YoloResult& result) {
+            media_engine_->UpdateYoloResult(result);
+            emit YoloResultReady(result);
+          });
 
   vision_engine_->SetCallbacks({
       [this](const TelemetryEvent& event) {
@@ -339,6 +345,10 @@ bool RuntimeManager::ToggleMediapipe(bool enable, std::string* err) {
   if (!vision_engine_->ToggleMediapipe(enable, err)) {
     return false;
   }
+  if (!enable) {
+    media_engine_->ClearMediapipeResult(
+        media_engine_->session_profile().selected_mediapipe_camera);
+  }
   if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
     StopResultPublishing();
   }
@@ -354,6 +364,9 @@ bool RuntimeManager::ToggleYolo(bool enable, std::string* err) {
   vision_engine_->SetSessionWriter(nullptr);
   if (!vision_engine_->ToggleYolo(enable, err)) {
     return false;
+  }
+  if (!enable) {
+    media_engine_->ClearYoloResult(media_engine_->session_profile().selected_yolo_camera);
   }
   if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
     StopResultPublishing();

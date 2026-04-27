@@ -8,6 +8,7 @@
 #include <QtGui/qwindowdefs.h>
 
 #include "rk_studio/domain/types.h"
+#include "rk_studio/vision_core/vision_types.h"
 
 #ifndef Q_MOC_RUN
 #include "rk_studio/domain/session.h"
@@ -42,6 +43,10 @@ class MediaEngine : public QObject {
   void StopRecording(bool ok = true);
   void StopRtsp();
   void StopAll();
+  void UpdateMediapipeResult(const vision::MediapipeResult& result);
+  void UpdateYoloResult(const vision::YoloResult& result);
+  void ClearMediapipeResult(const std::string& camera_id);
+  void ClearYoloResult(const std::string& camera_id);
 
   void BindPreviewWindow(const std::string& camera_id, WId window_id);
   void ObserveTelemetry(const TelemetryEvent& event);

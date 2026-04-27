@@ -22,4 +22,9 @@ bool PreprocessFrameToRknn(const CameraFrame& frame,
 bool ConvertNv12ToRgb(int dmabuf_fd, int width, int height, int stride,
                       cv::Mat* rgb_out);
 
+// Full-frame RGB888→NV12 conversion via RGA hardware.
+// On success, writes a tightly packed NV12 cv::Mat ((h * 3 / 2) × w) to
+// *nv12_out and returns true.
+bool ConvertRgbToNv12(const cv::Mat& rgb, cv::Mat* nv12_out);
+
 }  // namespace mediapipe_demo

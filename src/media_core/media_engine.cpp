@@ -149,6 +149,30 @@ void MediaEngine::StopAll() {
   StopPipelines();
 }
 
+void MediaEngine::UpdateMediapipeResult(const vision::MediapipeResult& result) {
+  if (rtsp_server_) {
+    rtsp_server_->UpdateMediapipeResult(result);
+  }
+}
+
+void MediaEngine::UpdateYoloResult(const vision::YoloResult& result) {
+  if (rtsp_server_) {
+    rtsp_server_->UpdateYoloResult(result);
+  }
+}
+
+void MediaEngine::ClearMediapipeResult(const std::string& camera_id) {
+  if (rtsp_server_) {
+    rtsp_server_->ClearMediapipeResult(camera_id);
+  }
+}
+
+void MediaEngine::ClearYoloResult(const std::string& camera_id) {
+  if (rtsp_server_) {
+    rtsp_server_->ClearYoloResult(camera_id);
+  }
+}
+
 void MediaEngine::BindPreviewWindow(const std::string& camera_id, WId window_id) {
   preview_window_ids_[camera_id] = window_id;
   auto it = cameras_.find(camera_id);
