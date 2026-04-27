@@ -3,22 +3,11 @@
 #include <cstddef>
 #include <sstream>
 #include <string>
-#include <vector>
 
 namespace rkstudio::runtime {
 namespace {
 
 constexpr const char* kEntityRegistryTopic = "zho/entity/registry";
-
-std::string NormalizeZenohPrefix(std::string prefix) {
-  while (!prefix.empty() && prefix.front() == '/') {
-    prefix.erase(prefix.begin());
-  }
-  while (!prefix.empty() && prefix.back() == '/') {
-    prefix.pop_back();
-  }
-  return prefix.empty() ? "rk_studio" : prefix;
-}
 
 std::string JsonString(const std::string& value) {
   std::ostringstream out;
@@ -36,17 +25,6 @@ std::string JsonString(const std::string& value) {
     }
   }
   out << '"';
-  return out.str();
-}
-
-std::string JoinStrings(const std::vector<std::string>& values, const std::string& separator) {
-  std::ostringstream out;
-  for (std::size_t i = 0; i < values.size(); ++i) {
-    if (i > 0) {
-      out << separator;
-    }
-    out << values[i];
-  }
   return out.str();
 }
 
@@ -235,32 +213,24 @@ bool RuntimeManager::PublishEntityRegistrationAction(
     return false;
   }
 
-  const auto& profile = media_engine_->session_profile();
   const auto& entity = media_engine_->board_config().entity_registration;
-  const std::string key_prefix =
-      NormalizeZenohPrefix(media_engine_->board_config().zenoh->key_prefix);
-  std::vector<std::string> channels;
-  if (vision_engine_->mediapipe_enabled() && !profile.selected_mediapipe_camera.empty()) {
-    channels.push_back(key_prefix + "/mediapipe/" +
-                       profile.selected_mediapipe_camera + "/hands");
-  }
-  if (vision_engine_->yolo_enabled() && !profile.selected_yolo_camera.empty()) {
-    channels.push_back(key_prefix + "/yolo/" + profile.selected_yolo_camera +
-                       "/objects");
-  }
+  const bool is_register = action == "REG_REGISTER";
 
   std::ostringstream payload;
   payload << "{"
           << "\"_type\":" << JsonString("ObjectRegistration") << ","
           << "\"entity_id\":" << JsonString(entity.entity_id) << ","
-          << "\"display_name\":" << JsonString(entity.display_name) << ","
-          << "\"action\":" << JsonString(action) << ","
-          << "\"metadata\":{"
-          << "\"owner\":" << JsonString(entity.owner) << ","
-          << "\"device_type\":" << JsonString(entity.device_type) << ","
-          << "\"provides_channels\":" << JsonString(JoinStrings(channels, ","))
-          << "}"
-          << "}";
+          << "\"action\":" << JsonString(action);
+  if (is_register) {
+    payload << ",\"display_name\":" << JsonString(entity.display_name)
+            << ",\"metadata\":{"
+            << "\"owner\":" << JsonString(entity.owner) << ","
+            << "\"device_type\":" << JsonString(entity.device_type) << ","
+            << "\"provides_channels\":" << JsonString(entity.provides_channels) << ","
+            << "\"video_stream_url\":" << JsonString(entity.video_stream_url)
+            << "}";
+  }
+  payload << "}";
 
   if (!zenoh_publisher_.PublishJson(kEntityRegistryTopic, payload.str())) {
     if (err) *err = "failed to publish entity registration";

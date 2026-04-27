@@ -20,7 +20,7 @@
 namespace rkstudio::media {
 namespace {
 
-constexpr int kMediapipeFps = 15;
+constexpr int kMediapipeFps = 10;
 constexpr int kDefaultYoloFps = 5;
 constexpr float kYoloPublishMinScore = 0.7f;
 
@@ -56,12 +56,8 @@ std::string MediapipeResultToJson(const rkstudio::vision::MediapipeResult& r) {
   for (size_t h = 0; h < r.hands.size(); ++h) {
     if (h > 0) o << ',';
     const auto& hand = r.hands[h];
-    o << "{\"id\":" << hand.hand_id;
-    if (!hand.gesture.empty()) {
-      o << ",\"gesture\":\"" << rkinfra::JsonEscape(hand.gesture)
-        << "\",\"gesture_score\":" << hand.gesture_score;
-    }
-    o << '}';
+    o << "{\"id\":" << hand.hand_id
+      << ",\"gesture\":\"" << rkinfra::JsonEscape(hand.gesture) << "\"}";
   }
   o << "]}";
   return o.str();

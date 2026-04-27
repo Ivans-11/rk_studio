@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -12,9 +13,11 @@
 #include <string>
 #include <unordered_set>
 
+#include <gst/allocators/gstdmabuf.h>
 #include <gst/app/gstappsrc.h>
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h>
+#include <gst/video/video.h>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -32,6 +35,28 @@ std::string Uppercase(std::string value) {
 
 int AlignUp(int value, int alignment) {
   return ((value + alignment - 1) / alignment) * alignment;
+}
+
+int ExtractDmabufFd(GstBuffer* buffer) {
+  if (buffer == nullptr) {
+    return -1;
+  }
+  GstMemory* mem = gst_buffer_peek_memory(buffer, 0);
+  if (mem != nullptr && gst_is_dmabuf_memory(mem)) {
+    return gst_dmabuf_memory_get_fd(mem);
+  }
+  return -1;
+}
+
+std::shared_ptr<GstSample> HoldSampleRef(GstSample* sample) {
+  if (sample == nullptr) {
+    return {};
+  }
+  return std::shared_ptr<GstSample>(gst_sample_ref(sample), [](GstSample* ptr) {
+    if (ptr != nullptr) {
+      gst_sample_unref(ptr);
+    }
+  });
 }
 
 void AppendEncoderTail(std::ostringstream& ss, const std::string& codec, int gop, int bitrate) {
@@ -57,48 +82,6 @@ std::string BuildCameraAppSrcLaunchString(int width,
      << ",framerate=" << fps << "/1 "
      << "! queue leaky=downstream max-size-buffers=2 ";
   AppendEncoderTail(ss, codec, gop, bitrate);
-  ss << ")";
-  return ss.str();
-}
-
-std::string BuildMosaicAppSrcLaunchString(const std::vector<const CameraNodeSet*>& cams,
-                                          const std::string& codec,
-                                          int gop,
-                                          int bitrate) {
-  const int n = static_cast<int>(cams.size());
-  const int cols = static_cast<int>(std::ceil(std::sqrt(n)));
-  const int rows = (n + cols - 1) / cols;
-
-  // Use first camera's preview dimensions as tile size
-  const int tile_w = cams[0]->preview_width;
-  const int tile_h = cams[0]->preview_height;
-  const bool h265 = Uppercase(codec) == "H265";
-  const int out_w = h265 ? AlignUp(tile_w * cols, 16) : tile_w * cols;
-  const int out_h = h265 ? AlignUp(tile_h * rows, 16) : tile_h * rows;
-  const int fps = cams[0]->fps;
-
-  std::ostringstream ss;
-  ss << "( compositor name=mix background=black ";
-
-  for (int i = 0; i < n; ++i) {
-    const int col = i % cols;
-    const int row = i / cols;
-    ss << "sink_" << i << "::xpos=" << col * tile_w << " "
-       << "sink_" << i << "::ypos=" << row * tile_h << " ";
-  }
-
-  ss << "! video/x-raw,width=" << out_w << ",height=" << out_h << " "
-     << "! videoconvert ! video/x-raw,format=NV12 ";
-  AppendEncoderTail(ss, codec, gop, bitrate);
-
-  for (int i = 0; i < n; ++i) {
-    ss << "appsrc name=src_" << i << " is-live=true format=time do-timestamp=false block=false "
-       << "! video/x-raw,format=NV12,width=" << tile_w << ",height=" << tile_h
-       << ",framerate=" << fps << "/1 "
-       << "! queue leaky=downstream max-size-buffers=2 "
-       << "! mix.sink_" << i << " ";
-  }
-
   ss << ")";
   return ss.str();
 }
@@ -285,11 +268,23 @@ void DrawYoloOverlay(cv::Mat& rgb, const vision::YoloResult& result) {
 
 }  // namespace
 
+struct MosaicFrame {
+  bool valid = false;
+  int width = 0;
+  int height = 0;
+  int stride = 0;
+  int dmabuf_fd = -1;
+  cv::Mat nv12;
+  std::shared_ptr<GstSample> sample_ref;
+};
+
 struct RtspServer::CameraStream {
   RtspServer* owner = nullptr;
+  RtspRoute* route = nullptr;
   std::string mount;
   std::string camera_id;
   std::string appsrc_name = "src";
+  int route_index = -1;
   int width = 0;
   int height = 0;
   int fps = 30;
@@ -305,8 +300,26 @@ struct RtspServer::CameraStream {
 };
 
 struct RtspServer::RtspRoute {
+  RtspServer* owner = nullptr;
   std::string mount;
+  bool mosaic = false;
+  std::string appsrc_name = "src";
+  int cols = 0;
+  int rows = 0;
+  int tile_width = 0;
+  int tile_height = 0;
+  int output_width = 0;
+  int output_height = 0;
+  int fps = 30;
   std::vector<CameraStream*> inputs;
+
+  std::mutex mu;
+  GstElement* appsrc = nullptr;
+  GstRTSPMedia* media = nullptr;
+  gulong unprepared_handler = 0;
+  GstClockTime first_pts = GST_CLOCK_TIME_NONE;
+  GstClockTime next_pts = 0;
+  std::vector<MosaicFrame> latest_frames;
 };
 
 RtspServer::~RtspServer() { Stop(); }
@@ -357,14 +370,14 @@ std::optional<vision::YoloResult> RtspServer::LatestYoloResult(
   return it->second;
 }
 
-GstBuffer* RtspServer::BuildOverlayBuffer(CameraStream* stream, GstSample* sample) const {
+std::optional<cv::Mat> RtspServer::BuildOverlayNv12(CameraStream* stream, GstSample* sample) const {
   if (stream == nullptr || sample == nullptr) {
-    return nullptr;
+    return std::nullopt;
   }
 
   GstBuffer* input = gst_sample_get_buffer(sample);
   if (input == nullptr) {
-    return nullptr;
+    return std::nullopt;
   }
 
   const auto mediapipe_result = LatestMediapipeResult(stream->camera_id);
@@ -376,17 +389,17 @@ GstBuffer* RtspServer::BuildOverlayBuffer(CameraStream* stream, GstSample* sampl
       yolo_result.has_value() && yolo_result->ok &&
       !yolo_result->detections.empty();
   if (!has_mediapipe_overlay && !has_yolo_overlay) {
-    return gst_buffer_copy(input);
+    return std::nullopt;
   }
 
   auto rgb_frame = frame_converter_.ConvertToRgbFrame(sample, stream->camera_id);
   if (!rgb_frame.has_value() || !rgb_frame->owned_data) {
-    return gst_buffer_copy(input);
+    return std::nullopt;
   }
 
   auto rgb_holder = std::static_pointer_cast<cv::Mat>(rgb_frame->owned_data);
   if (!rgb_holder || rgb_holder->empty()) {
-    return gst_buffer_copy(input);
+    return std::nullopt;
   }
 
   if (has_mediapipe_overlay) {
@@ -398,16 +411,65 @@ GstBuffer* RtspServer::BuildOverlayBuffer(CameraStream* stream, GstSample* sampl
 
   cv::Mat nv12;
   if (!mediapipe_demo::ConvertRgbToNv12(*rgb_holder, &nv12) || nv12.empty()) {
+    return std::nullopt;
+  }
+  return nv12;
+}
+
+GstBuffer* RtspServer::BuildOverlayBuffer(CameraStream* stream, GstSample* sample) const {
+  if (sample == nullptr) {
+    return nullptr;
+  }
+
+  GstBuffer* input = gst_sample_get_buffer(sample);
+  if (input == nullptr) {
+    return nullptr;
+  }
+
+  auto overlay_nv12 = BuildOverlayNv12(stream, sample);
+  if (!overlay_nv12.has_value() || overlay_nv12->empty()) {
     return gst_buffer_copy(input);
   }
 
-  const size_t bytes = nv12.total() * nv12.elemSize();
+  const size_t bytes = overlay_nv12->total() * overlay_nv12->elemSize();
   GstBuffer* output = gst_buffer_new_allocate(nullptr, bytes, nullptr);
   if (output == nullptr) {
     return nullptr;
   }
-  gst_buffer_fill(output, 0, nv12.data, bytes);
+  gst_buffer_fill(output, 0, overlay_nv12->data, bytes);
   return output;
+}
+
+void RtspServer::StopRouteMedia() {
+  for (auto& [_, route] : routes_) {
+    if (!route) {
+      continue;
+    }
+    GstElement* appsrc = nullptr;
+    GstRTSPMedia* media = nullptr;
+    gulong unprepared_handler = 0;
+    {
+      std::lock_guard<std::mutex> lock(route->mu);
+      appsrc = route->appsrc;
+      route->appsrc = nullptr;
+      media = route->media;
+      route->media = nullptr;
+      unprepared_handler = route->unprepared_handler;
+      route->unprepared_handler = 0;
+      route->first_pts = GST_CLOCK_TIME_NONE;
+      route->next_pts = 0;
+      route->latest_frames.clear();
+    }
+    if (media != nullptr && unprepared_handler != 0) {
+      g_signal_handler_disconnect(media, unprepared_handler);
+    }
+    if (appsrc != nullptr) {
+      gst_object_unref(appsrc);
+    }
+    if (media != nullptr) {
+      gst_object_unref(media);
+    }
+  }
 }
 
 void RtspServer::StopCameraStreams() {
@@ -457,6 +519,18 @@ void RtspServer::OnRouteMediaConfigure(GstRTSPMediaFactory*, GstRTSPMedia* media
 
   GstElement* element = gst_rtsp_media_get_element(media);
   if (element == nullptr) {
+    return;
+  }
+
+  if (route->mosaic) {
+    GstElement* appsrc = gst_bin_get_by_name_recurse_up(GST_BIN(element), route->appsrc_name.c_str());
+    if (appsrc == nullptr) {
+      std::cerr << "[rtsp] appsrc " << route->appsrc_name
+                << " not found for " << route->mount << "\n";
+    } else {
+      AttachRouteAppSrc(route, media, appsrc);
+    }
+    gst_object_unref(element);
     return;
   }
 
@@ -545,6 +619,78 @@ void RtspServer::AttachAppSrc(CameraStream* stream, GstRTSPMedia* media, GstElem
   }
 }
 
+void RtspServer::AttachRouteAppSrc(RtspRoute* route, GstRTSPMedia* media, GstElement* appsrc) {
+  if (route == nullptr || media == nullptr) {
+    return;
+  }
+  if (appsrc == nullptr) {
+    std::cerr << "[rtsp] appsrc not found for " << route->mount << "\n";
+    return;
+  }
+
+  g_object_set(G_OBJECT(appsrc),
+               "is-live", TRUE,
+               "format", GST_FORMAT_TIME,
+               "do-timestamp", FALSE,
+               "block", FALSE,
+               nullptr);
+
+  GstRTSPMedia* media_ref = GST_RTSP_MEDIA(gst_object_ref(media));
+  const gulong unprepared_handler =
+      g_signal_connect(media, "unprepared", G_CALLBACK(&RtspServer::OnRouteMediaUnprepared), route);
+
+  std::vector<CameraStream*> streams_to_start;
+  {
+    std::lock_guard<std::mutex> lock(route->mu);
+    if (route->appsrc != nullptr) {
+      gst_object_unref(route->appsrc);
+    }
+    if (route->media != nullptr && route->unprepared_handler != 0) {
+      g_signal_handler_disconnect(route->media, route->unprepared_handler);
+    }
+    if (route->media != nullptr) {
+      gst_object_unref(route->media);
+    }
+    route->appsrc = appsrc;
+    route->media = media_ref;
+    route->unprepared_handler = unprepared_handler;
+    route->first_pts = GST_CLOCK_TIME_NONE;
+    route->next_pts = 0;
+    route->latest_frames.assign(route->inputs.size(), MosaicFrame{});
+
+    for (CameraStream* stream : route->inputs) {
+      if (stream != nullptr && stream->capture == nullptr) {
+        streams_to_start.push_back(stream);
+      }
+    }
+  }
+
+  for (CameraStream* stream : streams_to_start) {
+    auto capture = std::make_unique<V4l2Pipeline>();
+    std::string capture_err;
+    if (!capture->Build(stream->capture_options,
+                        [](const TelemetryEvent&) {},
+                        [stream](const std::string& reason, bool fatal) {
+                          std::cerr << "[rtsp] capture error on " << stream->mount
+                                    << " fatal=" << fatal << ": " << reason << "\n";
+                        },
+                        &capture_err) ||
+        !capture->Start(&capture_err)) {
+      std::cerr << "[rtsp] failed to start capture for " << stream->mount
+                << ": " << capture_err << "\n";
+      continue;
+    }
+
+    std::lock_guard<std::mutex> lock(stream->mu);
+    if (stream->capture == nullptr) {
+      stream->capture = std::move(capture);
+    }
+    if (capture) {
+      capture->Stop();
+    }
+  }
+}
+
 void RtspServer::OnMediaUnprepared(GstRTSPMedia* media, gpointer user_data) {
   auto* stream = static_cast<CameraStream*>(user_data);
   if (stream == nullptr) {
@@ -575,8 +721,181 @@ void RtspServer::OnMediaUnprepared(GstRTSPMedia* media, gpointer user_data) {
   }
 }
 
+void RtspServer::OnRouteMediaUnprepared(GstRTSPMedia* media, gpointer user_data) {
+  auto* route = static_cast<RtspRoute*>(user_data);
+  if (route == nullptr) {
+    return;
+  }
+  GstElement* appsrc = nullptr;
+  GstRTSPMedia* media_ref = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(route->mu);
+    appsrc = route->appsrc;
+    route->appsrc = nullptr;
+    if (route->media == media) {
+      if (route->unprepared_handler != 0) {
+        g_signal_handler_disconnect(media, route->unprepared_handler);
+      }
+      media_ref = route->media;
+      route->media = nullptr;
+      route->unprepared_handler = 0;
+    }
+    route->first_pts = GST_CLOCK_TIME_NONE;
+    route->next_pts = 0;
+    route->latest_frames.clear();
+  }
+  if (appsrc != nullptr) {
+    gst_object_unref(appsrc);
+  }
+  if (media_ref != nullptr) {
+    gst_object_unref(media_ref);
+  }
+}
+
+void RtspServer::PushMosaicSample(RtspRoute* route, CameraStream* stream, GstSample* sample) {
+  if (route == nullptr || stream == nullptr || sample == nullptr) {
+    return;
+  }
+
+  GstBuffer* input = gst_sample_get_buffer(sample);
+  GstCaps* caps = gst_sample_get_caps(sample);
+  if (input == nullptr || caps == nullptr) {
+    return;
+  }
+
+  GstVideoInfo info;
+  if (!gst_video_info_from_caps(&info, caps) ||
+      GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_NV12) {
+    return;
+  }
+
+  MosaicFrame frame;
+  frame.valid = true;
+  frame.width = GST_VIDEO_INFO_WIDTH(&info);
+  frame.height = GST_VIDEO_INFO_HEIGHT(&info);
+  frame.stride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 0);
+
+  auto overlay_nv12 = BuildOverlayNv12(stream, sample);
+  if (overlay_nv12.has_value() && !overlay_nv12->empty()) {
+    frame.nv12 = std::move(*overlay_nv12);
+    frame.dmabuf_fd = -1;
+    frame.stride = static_cast<int>(frame.nv12.step[0]);
+  } else {
+    frame.dmabuf_fd = ExtractDmabufFd(input);
+    if (frame.dmabuf_fd >= 0) {
+      frame.sample_ref = HoldSampleRef(sample);
+    } else {
+      GstMapInfo map;
+      if (!gst_buffer_map(input, &map, GST_MAP_READ)) {
+        return;
+      }
+      frame.nv12 = cv::Mat(frame.height * 3 / 2, frame.width, CV_8UC1);
+      const size_t bytes = std::min(map.size, frame.nv12.total() * frame.nv12.elemSize());
+      std::memcpy(frame.nv12.data, map.data, bytes);
+      gst_buffer_unmap(input, &map);
+      frame.dmabuf_fd = -1;
+      frame.stride = static_cast<int>(frame.nv12.step[0]);
+    }
+  }
+
+  GstElement* appsrc = nullptr;
+  std::vector<MosaicFrame> snapshot;
+  GstClockTime pts = GST_BUFFER_PTS(input);
+  const GstClockTime duration = route->fps > 0
+      ? static_cast<GstClockTime>(GST_SECOND / route->fps)
+      : GST_CLOCK_TIME_NONE;
+  {
+    std::lock_guard<std::mutex> lock(route->mu);
+    if (route->appsrc == nullptr ||
+        stream->route_index < 0 ||
+        stream->route_index >= static_cast<int>(route->latest_frames.size())) {
+      return;
+    }
+
+    route->latest_frames[stream->route_index] = std::move(frame);
+    if (stream->route_index != 0) {
+      return;
+    }
+
+    for (const auto& latest : route->latest_frames) {
+      if (!latest.valid) {
+        return;
+      }
+    }
+
+    appsrc = route->appsrc;
+    gst_object_ref(appsrc);
+    snapshot = route->latest_frames;
+
+    if (!GST_CLOCK_TIME_IS_VALID(pts)) {
+      pts = route->next_pts;
+    } else {
+      if (!GST_CLOCK_TIME_IS_VALID(route->first_pts)) {
+        route->first_pts = pts;
+      }
+      pts -= route->first_pts;
+    }
+    if (GST_CLOCK_TIME_IS_VALID(duration)) {
+      route->next_pts = pts + duration;
+    } else {
+      route->next_pts = pts;
+    }
+  }
+
+  std::vector<mediapipe_demo::Nv12RgaInput> rga_inputs;
+  rga_inputs.reserve(snapshot.size());
+  for (const auto& latest : snapshot) {
+    mediapipe_demo::Nv12RgaInput rga_input;
+    rga_input.dmabuf_fd = latest.dmabuf_fd;
+    rga_input.data = latest.nv12.empty() ? nullptr : latest.nv12.data;
+    rga_input.width = latest.width;
+    rga_input.height = latest.height;
+    rga_input.stride = latest.stride;
+    rga_inputs.push_back(rga_input);
+  }
+
+  cv::Mat mosaic;
+  if (!mediapipe_demo::MosaicNv12ToNv12(rga_inputs,
+                                        route->cols,
+                                        route->rows,
+                                        route->tile_width,
+                                        route->tile_height,
+                                        route->output_width,
+                                        route->output_height,
+                                        &mosaic) ||
+      mosaic.empty()) {
+    gst_object_unref(appsrc);
+    return;
+  }
+
+  const size_t bytes = mosaic.total() * mosaic.elemSize();
+  GstBuffer* output = gst_buffer_new_allocate(nullptr, bytes, nullptr);
+  if (output == nullptr) {
+    gst_object_unref(appsrc);
+    return;
+  }
+  gst_buffer_fill(output, 0, mosaic.data, bytes);
+  GST_BUFFER_PTS(output) = pts;
+  GST_BUFFER_DTS(output) = pts;
+  GST_BUFFER_DURATION(output) = duration;
+
+  const GstFlowReturn flow = gst_app_src_push_buffer(GST_APP_SRC(appsrc), output);
+  if (flow != GST_FLOW_OK && flow != GST_FLOW_FLUSHING && flow != GST_FLOW_EOS) {
+    std::cerr << "[rtsp] mosaic appsrc push failed for " << route->mount
+              << ": " << flow << "\n";
+  }
+  gst_object_unref(appsrc);
+}
+
 void RtspServer::PushRtspSample(CameraStream* stream, GstSample* sample) {
   if (stream == nullptr || sample == nullptr) {
+    return;
+  }
+
+  if (stream->route != nullptr && stream->route->mosaic) {
+    if (stream->owner != nullptr) {
+      stream->owner->PushMosaicSample(stream->route, stream, sample);
+    }
     return;
   }
 
@@ -651,6 +970,7 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
   auto fail_start = [&]() {
     g_object_unref(mounts);
     StopCameraStreams();
+    StopRouteMedia();
     if (server_ != nullptr) {
       g_object_unref(server_);
       server_ = nullptr;
@@ -732,17 +1052,37 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
 
     if (mount == "cam") {
       auto route = std::make_shared<RtspRoute>();
+      route->owner = this;
       route->mount = "/cam";
+      route->mosaic = true;
       const int tile_w = cams[0]->preview_width;
       const int tile_h = cams[0]->preview_height;
+      const int n = static_cast<int>(cams.size());
+      route->cols = static_cast<int>(std::ceil(std::sqrt(n)));
+      route->rows = (n + route->cols - 1) / route->cols;
+      route->tile_width = tile_w;
+      route->tile_height = tile_h;
+      const bool h265 = Uppercase(codec) == "H265";
+      route->output_width = h265 ? AlignUp(tile_w * route->cols, 16) : tile_w * route->cols;
+      route->output_height = h265 ? AlignUp(tile_h * route->rows, 16) : tile_h * route->rows;
+      route->fps = cams[0]->fps;
+      route->latest_frames.assign(cams.size(), MosaicFrame{});
       for (int i = 0; i < static_cast<int>(cams.size()); ++i) {
         const CameraNodeSet& cam = *cams[i];
-        route->inputs.push_back(add_capture_stream(
-            cam, route->mount, "cam_" + cam.id, "src_" + std::to_string(i),
-            tile_w, tile_h, cam.bitrate));
+        CameraStream* stream = add_capture_stream(
+            cam, route->mount, "cam_" + cam.id, "src",
+            tile_w, tile_h, cam.bitrate);
+        stream->route = route.get();
+        stream->route_index = i;
+        route->inputs.push_back(stream);
       }
 
-      const std::string launch = BuildMosaicAppSrcLaunchString(cams, codec, gop, stream_bitrate);
+      const std::string launch = BuildCameraAppSrcLaunchString(route->output_width,
+                                                               route->output_height,
+                                                               route->fps,
+                                                               codec,
+                                                               gop,
+                                                               stream_bitrate);
       GstRTSPMediaFactory* factory = gst_rtsp_media_factory_new();
       gst_rtsp_media_factory_set_launch(factory, launch.c_str());
       gst_rtsp_media_factory_set_shared(factory, TRUE);
@@ -752,7 +1092,9 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
 
       std::cerr << "rtsp mount: rtsp://0.0.0.0:" << rtsp.port << route->mount << "\n";
       std::cerr << "  capture: mosaic " << tile_w << "x" << tile_h
-                << "@" << cams[0]->fps << "fps x" << cams.size() << "\n";
+                << "@" << route->fps << "fps x" << cams.size()
+                << " via RGA -> " << route->output_width << "x"
+                << route->output_height << "\n";
       std::cerr << "  pipeline: " << launch << "\n";
       routes_.emplace(mount, std::move(route));
       continue;
@@ -796,6 +1138,7 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
   if (attach_id_ == 0) {
     if (err) *err = "failed to attach RTSP server on port " + std::to_string(rtsp.port);
     StopCameraStreams();
+    StopRouteMedia();
     g_object_unref(server_);
     server_ = nullptr;
     routes_.clear();
@@ -816,6 +1159,7 @@ void RtspServer::Stop() {
     attach_id_ = 0;
   }
   StopCameraStreams();
+  StopRouteMedia();
   if (server_ != nullptr) {
     g_object_unref(server_);
     server_ = nullptr;

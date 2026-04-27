@@ -428,7 +428,8 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
 
   if (const auto* entity_table = root["entity"].as_table()) {
     static const std::unordered_set<std::string> kAllowed{
-        "entity_id", "display_name", "owner", "device_type"};
+        "entity_id", "display_name", "owner", "device_type",
+        "provides_channels", "video_stream_url"};
     if (!RejectUnknownKeys(*entity_table, kAllowed, "entity", err)) {
       return false;
     }
@@ -436,7 +437,9 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
     if (!AssignValue(*entity_table, "entity_id", &entity.entity_id, "entity", err) ||
         !AssignValue(*entity_table, "display_name", &entity.display_name, "entity", err) ||
         !AssignValue(*entity_table, "owner", &entity.owner, "entity", err) ||
-        !AssignValue(*entity_table, "device_type", &entity.device_type, "entity", err)) {
+        !AssignValue(*entity_table, "device_type", &entity.device_type, "entity", err) ||
+        !AssignValue(*entity_table, "provides_channels", &entity.provides_channels, "entity", err) ||
+        !AssignValue(*entity_table, "video_stream_url", &entity.video_stream_url, "entity", err)) {
       return false;
     }
     parsed.entity_registration = entity;

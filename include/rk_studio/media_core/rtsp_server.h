@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <glib.h>
+#include <opencv2/core.hpp>
 
 #include "rk_studio/domain/types.h"
 #include "rk_studio/media_core/frame_converter.h"
@@ -44,11 +45,16 @@ class RtspServer {
   struct RtspRoute;
   static void OnRouteMediaConfigure(GstRTSPMediaFactory* factory, GstRTSPMedia* media, gpointer user_data);
   static void OnMediaUnprepared(GstRTSPMedia* media, gpointer user_data);
+  static void OnRouteMediaUnprepared(GstRTSPMedia* media, gpointer user_data);
   static void AttachAppSrc(CameraStream* stream, GstRTSPMedia* media, GstElement* appsrc);
+  static void AttachRouteAppSrc(RtspRoute* route, GstRTSPMedia* media, GstElement* appsrc);
   static void PushRtspSample(CameraStream* stream, GstSample* sample);
   GstBuffer* BuildOverlayBuffer(CameraStream* stream, GstSample* sample) const;
+  std::optional<cv::Mat> BuildOverlayNv12(CameraStream* stream, GstSample* sample) const;
+  void PushMosaicSample(RtspRoute* route, CameraStream* stream, GstSample* sample);
   std::optional<vision::MediapipeResult> LatestMediapipeResult(const std::string& camera_id) const;
   std::optional<vision::YoloResult> LatestYoloResult(const std::string& camera_id) const;
+  void StopRouteMedia();
   void StopCameraStreams();
 
   _GstRTSPServer* server_ = nullptr;

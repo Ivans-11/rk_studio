@@ -111,7 +111,8 @@ class ZenohPublisher::Impl {
   }
 
   bool PublishMediapipe(const std::string& camera_id, const std::string& payload) {
-    return Publish(key_prefix_ + "/mediapipe/" + camera_id + "/hands", payload);
+    (void)camera_id;
+    return Publish("halmet/mediapipe", payload);
   }
 
   bool PublishYolo(const std::string& camera_id, const std::string& payload) {

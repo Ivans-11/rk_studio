@@ -1,6 +1,7 @@
 #include "mediapipe/preprocess/hw_preprocess.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -272,7 +273,6 @@ bool PreprocessFrameToRknn(const CameraFrame& frame,
   if (!g_hw_preprocess_available) {
     return false;
   }
-
   cv::Rect clamped = ClampRect(src_rect, frame.width, frame.height);
   if (clamped.width <= 1 || clamped.height <= 1) {
     return false;
@@ -406,7 +406,6 @@ bool ConvertNv12ToRgb(int dmabuf_fd, int width, int height, int stride,
   if (!g_hw_preprocess_available) {
     return false;
   }
-
 #if !defined(__linux__)
   return false;
 #else
@@ -470,13 +469,32 @@ bool ConvertRgbToNv12(const cv::Mat& rgb, cv::Mat* nv12_out) {
   if (!g_hw_preprocess_available) {
     return false;
   }
-
 #if !defined(__linux__)
   return false;
 #else
   const int width = rgb.cols;
   const int height = rgb.rows;
-  const int src_stride = static_cast<int>(rgb.step[0] / rgb.elemSize());
+  const size_t src_size = static_cast<size_t>(width) * height * 4;
+  ScratchDmabuf* src_scratch = AcquireScratchBuffer(src_size,
+                                                    width, height,
+                                                    width, height,
+                                                    RK_FORMAT_RGBA_8888);
+  if (src_scratch == nullptr) {
+    return false;
+  }
+
+  auto* src_bytes = static_cast<uint8_t*>(src_scratch->addr());
+  for (int y = 0; y < height; ++y) {
+    const uint8_t* rgb_row = rgb.ptr(y);
+    uint8_t* rgba_row = src_bytes + static_cast<size_t>(y) * width * 4;
+    for (int x = 0; x < width; ++x) {
+      rgba_row[x * 4 + 0] = rgb_row[x * 3 + 0];
+      rgba_row[x * 4 + 1] = rgb_row[x * 3 + 1];
+      rgba_row[x * 4 + 2] = rgb_row[x * 3 + 2];
+      rgba_row[x * 4 + 3] = 0xff;
+    }
+  }
+
   const size_t dst_size = static_cast<size_t>(width) * height * 3 / 2;
   ScratchDmabuf* scratch = AcquireScratchBuffer(dst_size,
                                                 width, height,
@@ -486,12 +504,12 @@ bool ConvertRgbToNv12(const cv::Mat& rgb, cv::Mat* nv12_out) {
     return false;
   }
 
-  rga_buffer_t src = wrapbuffer_virtualaddr(rgb.data,
-                                            width,
-                                            height,
-                                            src_stride,
-                                            height,
-                                            RK_FORMAT_RGB_888);
+  rga_buffer_t src = wrapbuffer_fd_t(src_scratch->fd(),
+                                     src_scratch->width(),
+                                     src_scratch->height(),
+                                     src_scratch->wstride(),
+                                     src_scratch->hstride(),
+                                     src_scratch->format());
   rga_buffer_t dst = wrapbuffer_fd_t(scratch->fd(),
                                      scratch->width(),
                                      scratch->height(),
@@ -520,6 +538,126 @@ bool ConvertRgbToNv12(const cv::Mat& rgb, cv::Mat* nv12_out) {
   }
 
   cv::Mat nv12(height * 3 / 2, width, CV_8UC1, scratch->addr(), width);
+  *nv12_out = nv12.clone();
+  return true;
+#endif
+}
+
+bool MosaicNv12ToNv12(const std::vector<Nv12RgaInput>& inputs,
+                      int cols,
+                      int rows,
+                      int tile_width,
+                      int tile_height,
+                      int output_width,
+                      int output_height,
+                      cv::Mat* nv12_out) {
+  std::lock_guard<std::mutex> lock(g_hw_preprocess_mutex);
+
+  if (inputs.empty() || cols <= 0 || rows <= 0 ||
+      tile_width <= 0 || tile_height <= 0 ||
+      output_width <= 0 || output_height <= 0 ||
+      nv12_out == nullptr) {
+    return false;
+  }
+  if (!g_hw_preprocess_available) {
+    return false;
+  }
+  if (cols * tile_width > output_width || rows * tile_height > output_height) {
+    return false;
+  }
+
+#if !defined(__linux__)
+  return false;
+#else
+  const int out_w = output_width;
+  const int out_h = output_height;
+  const size_t dst_size = static_cast<size_t>(out_w) * out_h * 3 / 2;
+  ScratchDmabuf* dst_scratch = AcquireScratchBuffer(dst_size,
+                                                    out_w,
+                                                    out_h,
+                                                    out_w,
+                                                    out_h,
+                                                    RK_FORMAT_YCbCr_420_SP);
+  if (dst_scratch == nullptr) {
+    return false;
+  }
+
+  auto* dst_bytes = static_cast<uint8_t*>(dst_scratch->addr());
+  std::memset(dst_bytes, 0, static_cast<size_t>(out_w) * out_h);
+  std::memset(dst_bytes + static_cast<size_t>(out_w) * out_h,
+              128,
+              static_cast<size_t>(out_w) * out_h / 2);
+
+  rga_buffer_t dst = wrapbuffer_fd_t(dst_scratch->fd(),
+                                     dst_scratch->width(),
+                                     dst_scratch->height(),
+                                     dst_scratch->wstride(),
+                                     dst_scratch->hstride(),
+                                     dst_scratch->format());
+  rga_buffer_t pat;
+  std::memset(&pat, 0, sizeof(pat));
+
+  const int count = std::min(static_cast<int>(inputs.size()), cols * rows);
+  for (int i = 0; i < count; ++i) {
+    const Nv12RgaInput& input = inputs[i];
+    if (input.width <= 0 || input.height <= 0) {
+      continue;
+    }
+    const int src_stride = input.stride > 0 ? input.stride : input.width;
+
+    rga_buffer_t src;
+    ScratchDmabuf* src_scratch = nullptr;
+    if (input.dmabuf_fd >= 0) {
+      src = wrapbuffer_fd_t(input.dmabuf_fd,
+                            input.width,
+                            input.height,
+                            src_stride,
+                            input.height,
+                            RK_FORMAT_YCbCr_420_SP);
+    } else if (input.data != nullptr) {
+      const size_t src_size = static_cast<size_t>(src_stride) * input.height * 3 / 2;
+      src_scratch = AcquireScratchBuffer(src_size,
+                                         input.width,
+                                         input.height,
+                                         src_stride,
+                                         input.height,
+                                         RK_FORMAT_YCbCr_420_SP);
+      if (src_scratch == nullptr) {
+        return false;
+      }
+      std::memcpy(src_scratch->addr(), input.data, std::min(src_size, src_scratch->size()));
+      src = wrapbuffer_fd_t(src_scratch->fd(),
+                            src_scratch->width(),
+                            src_scratch->height(),
+                            src_scratch->wstride(),
+                            src_scratch->hstride(),
+                            src_scratch->format());
+    } else {
+      continue;
+    }
+
+    const int col = i % cols;
+    const int row = i / cols;
+    im_rect srect{0, 0, input.width, input.height};
+    im_rect drect{col * tile_width, row * tile_height, tile_width, tile_height};
+    im_rect prect{0, 0, 0, 0};
+
+    const IM_STATUS check = imcheck_t(src, dst, pat, srect, drect, prect, 0);
+    if (!IsRgaSuccess(check)) {
+      std::cerr << "RGA MosaicNv12ToNv12 imcheck failed: "
+                << imStrError(check) << "\n";
+      return false;
+    }
+
+    const IM_STATUS status = improcess(src, dst, pat, srect, drect, prect, 0);
+    if (!IsRgaSuccess(status)) {
+      std::cerr << "RGA MosaicNv12ToNv12 improcess failed: "
+                << imStrError(status) << "\n";
+      return false;
+    }
+  }
+
+  cv::Mat nv12(out_h * 3 / 2, out_w, CV_8UC1, dst_scratch->addr(), out_w);
   *nv12_out = nv12.clone();
   return true;
 #endif

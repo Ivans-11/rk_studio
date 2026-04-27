@@ -1,11 +1,22 @@
 #pragma once
 
+#include <cstdint>
+#include <vector>
+
 #include <opencv2/core.hpp>
 #include <rknn_api.h>
 
 #include "mediapipe/common/types.h"
 
 namespace mediapipe_demo {
+
+struct Nv12RgaInput {
+  int dmabuf_fd = -1;
+  const uint8_t* data = nullptr;
+  int width = 0;
+  int height = 0;
+  int stride = 0;
+};
 
 cv::Size TensorSizeFromAttr(const rknn_tensor_attr& attr);
 
@@ -26,5 +37,16 @@ bool ConvertNv12ToRgb(int dmabuf_fd, int width, int height, int stride,
 // On success, writes a tightly packed NV12 cv::Mat ((h * 3 / 2) × w) to
 // *nv12_out and returns true.
 bool ConvertRgbToNv12(const cv::Mat& rgb, cv::Mat* nv12_out);
+
+// 2D NV12 mosaic via RGA. Inputs can be dmabuf-backed or tightly/strided
+// CPU NV12 data. On success, writes a tightly packed NV12 frame to *nv12_out.
+bool MosaicNv12ToNv12(const std::vector<Nv12RgaInput>& inputs,
+                      int cols,
+                      int rows,
+                      int tile_width,
+                      int tile_height,
+                      int output_width,
+                      int output_height,
+                      cv::Mat* nv12_out);
 
 }  // namespace mediapipe_demo

@@ -12,6 +12,8 @@ entity_id = "helmet_001"
 display_name = "张三的头盔"
 owner = "human_zhangsan_001"
 device_type = "helmet"
+provides_channels = "video_out,heartrate,eeg"
+video_stream_url = "ws://192.168.1.20:9000/stream/zhangsan_helmet"
 
 [yolo]
 model = "../models/yolo11n_rk3588_int8.rknn"

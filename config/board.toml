@@ -1,11 +1,19 @@
 [rtsp]
-mounts = ["cam0"]
+mounts = ["cam"]
 
 [zenoh]
 mode = "peer"
 connect = []
 listen = []
 key_prefix = "rk_studio"
+
+[entity]
+entity_id = "helmet_001"
+display_name = "张三的头盔"
+owner = "human_zhangsan_001"
+device_type = "helmet"
+provides_channels = "video_out,heartrate,eeg"
+video_stream_url = "ws://192.168.1.20:9000/stream/zhangsan_helmet"
 
 [yolo]
 model = "../models/yolo11n_rk3588_int8.rknn"
@@ -21,22 +29,22 @@ device = "hw:rockchipes8388,0"
 record_device = "/dev/video55"
 preview_width = 640
 preview_height = 360
-fps = 30
+fps = 20
 
 [camera.cam1]
 record_device = "/dev/video64"
 preview_width = 640
 preview_height = 360
-fps = 30
+fps = 20
 
 [camera.cam2]
 record_device = "/dev/video73"
 preview_width = 640
 preview_height = 360
-fps = 30
+fps = 20
 
 [camera.cam3]
 record_device = "/dev/video82"
 preview_width = 640
 preview_height = 360
-fps = 30
+fps = 20

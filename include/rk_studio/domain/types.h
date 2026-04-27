@@ -68,6 +68,8 @@ struct EntityRegistrationConfig {
   std::string display_name = "张三的头盔";
   std::string owner = "human_zhangsan_001";
   std::string device_type = "helmet";
+  std::string provides_channels = "video_out,heartrate,eeg";
+  std::string video_stream_url = "ws://192.168.1.20:9000/stream/zhangsan_helmet";
 };
 
 struct BoardConfig {
