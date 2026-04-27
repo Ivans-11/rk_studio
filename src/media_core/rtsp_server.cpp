@@ -379,9 +379,12 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
     return false;
   };
 
-  // Collect cameras for mosaic
+  const std::vector<std::string>& rtsp_camera_ids =
+      profile.record_cameras.empty() ? profile.preview_cameras : profile.record_cameras;
+
+  // Collect cameras for mosaic and bitrate fallback.
   std::vector<const CameraNodeSet*> cams;
-  for (const auto& cam_id : profile.record_cameras) {
+  for (const auto& cam_id : rtsp_camera_ids) {
     const CameraNodeSet* cam = FindCamera(board, cam_id);
     if (cam) cams.push_back(cam);
   }
