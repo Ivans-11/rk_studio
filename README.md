@@ -138,12 +138,20 @@ RTSP 只注册 mount，客户端第一次连接后启动对应采集链路；客
 Zenoh 发布模型结果：
 
 ```text
-rk_studio/mediapipe/<camera_id>/hands
+halmet/mediapipe
 rk_studio/yolo/<camera_id>/objects
 ```
 
-Mediapipe 手部结果只发布精简的 hand 对象；识别到点赞时，会包含
-`"gesture":"thumbs_up"` 和 `"gesture_score"`。
+Mediapipe 手部结果只发布精简的 hand 对象。
+
+本机联调注册状态和 Mediapipe 手势结果：
+
+```bash
+python3 scripts/zenoh_dashboard.py
+```
+
+然后打开 `http://127.0.0.1:8765/`。这个面板同时订阅 `zho/entity/registry`
+和 `halmet/mediapipe`，用于查看实体注册/注销状态和当前识别到的手势。
 
 ### profile.toml
 
@@ -197,7 +205,7 @@ records/rk_studio-YYYYMMDD-HHMMSS/
 3. 只开 Mediapipe：不开预览也能产生日志；开预览后只叠加关键点，不影响底层预览画面。
 4. 只开 YOLO：确认使用当前模型和 COCO 类别名。
 5. 同时开 Mediapipe + YOLO：两个摄像头分别叠加，UI 不闪烁、不抢画面。
-6. 开 Zenoh：订阅端能收到 `rk_studio/mediapipe/...` 或 `rk_studio/yolo/...`。
+6. 开 Zenoh：测试面板能收到 `zho/entity/registry` 和 `halmet/mediapipe`。
 7. 开 RTSP + 模型 + Zenoh：RTSP 画面和 Zenoh 模型结果同时正常。
 8. 先开模型和 Zenoh，再开始录制：录制期间按钮状态冻结，停止后生成 jsonl。
 

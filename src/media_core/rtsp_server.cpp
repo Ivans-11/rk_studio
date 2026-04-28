@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -13,7 +14,6 @@
 #include <string>
 #include <unordered_set>
 
-#include <gst/allocators/gstdmabuf.h>
 #include <gst/app/gstappsrc.h>
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h>
@@ -21,7 +21,6 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include "mediapipe/preprocess/hw_preprocess.h"
 #include "rk_studio/media_core/v4l2_pipeline.h"
 
 namespace rkstudio::media {
@@ -35,28 +34,6 @@ std::string Uppercase(std::string value) {
 
 int AlignUp(int value, int alignment) {
   return ((value + alignment - 1) / alignment) * alignment;
-}
-
-int ExtractDmabufFd(GstBuffer* buffer) {
-  if (buffer == nullptr) {
-    return -1;
-  }
-  GstMemory* mem = gst_buffer_peek_memory(buffer, 0);
-  if (mem != nullptr && gst_is_dmabuf_memory(mem)) {
-    return gst_dmabuf_memory_get_fd(mem);
-  }
-  return -1;
-}
-
-std::shared_ptr<GstSample> HoldSampleRef(GstSample* sample) {
-  if (sample == nullptr) {
-    return {};
-  }
-  return std::shared_ptr<GstSample>(gst_sample_ref(sample), [](GstSample* ptr) {
-    if (ptr != nullptr) {
-      gst_sample_unref(ptr);
-    }
-  });
 }
 
 void AppendEncoderTail(std::ostringstream& ss, const std::string& codec, int gop, int bitrate) {
@@ -91,6 +68,90 @@ std::string NormalizeMount(std::string mount) {
     mount.erase(mount.begin());
   }
   return mount;
+}
+
+bool CopyNv12SampleToTightMat(GstSample* sample,
+                              const GstVideoInfo& info,
+                              cv::Mat* out) {
+  if (sample == nullptr || out == nullptr ||
+      GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_NV12) {
+    return false;
+  }
+
+  GstBuffer* buffer = gst_sample_get_buffer(sample);
+  if (buffer == nullptr) {
+    return false;
+  }
+
+  const int width = GST_VIDEO_INFO_WIDTH(&info);
+  const int height = GST_VIDEO_INFO_HEIGHT(&info);
+  if (width <= 0 || height <= 0) {
+    return false;
+  }
+
+  GstVideoFrame frame;
+  if (!gst_video_frame_map(&frame, const_cast<GstVideoInfo*>(&info), buffer, GST_MAP_READ)) {
+    return false;
+  }
+
+  cv::Mat tight(height * 3 / 2, width, CV_8UC1);
+  const auto* src_y = static_cast<const uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 0));
+  const auto* src_uv = static_cast<const uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 1));
+  const int src_y_stride = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
+  const int src_uv_stride = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 1);
+
+  if (src_y == nullptr || src_uv == nullptr || src_y_stride <= 0 || src_uv_stride <= 0) {
+    gst_video_frame_unmap(&frame);
+    return false;
+  }
+
+  for (int y = 0; y < height; ++y) {
+    std::memcpy(tight.ptr<uint8_t>(y), src_y + static_cast<size_t>(y) * src_y_stride, width);
+  }
+  for (int y = 0; y < height / 2; ++y) {
+    std::memcpy(tight.ptr<uint8_t>(height + y),
+                src_uv + static_cast<size_t>(y) * src_uv_stride,
+                width);
+  }
+
+  gst_video_frame_unmap(&frame);
+  *out = std::move(tight);
+  return true;
+}
+
+bool ConvertRgbToNv12Cpu(const cv::Mat& rgb, cv::Mat* nv12) {
+  if (rgb.empty() || nv12 == nullptr || rgb.type() != CV_8UC3 ||
+      rgb.cols <= 0 || rgb.rows <= 0 ||
+      (rgb.cols % 2) != 0 || (rgb.rows % 2) != 0) {
+    return false;
+  }
+
+  cv::Mat i420;
+  cv::cvtColor(rgb, i420, cv::COLOR_RGB2YUV_I420);
+  if (i420.empty() || !i420.isContinuous()) {
+    return false;
+  }
+
+  const int width = rgb.cols;
+  const int height = rgb.rows;
+  cv::Mat output(height * 3 / 2, width, CV_8UC1);
+  std::memcpy(output.ptr<uint8_t>(0), i420.ptr<uint8_t>(0),
+              static_cast<size_t>(width) * height);
+
+  const uint8_t* u_plane = i420.ptr<uint8_t>(0) + static_cast<size_t>(width) * height;
+  const uint8_t* v_plane = u_plane + static_cast<size_t>(width / 2) * (height / 2);
+  uint8_t* uv_plane = output.ptr<uint8_t>(height);
+  for (int y = 0; y < height / 2; ++y) {
+    for (int x = 0; x < width / 2; ++x) {
+      uv_plane[static_cast<size_t>(y) * width + x * 2] =
+          u_plane[static_cast<size_t>(y) * (width / 2) + x];
+      uv_plane[static_cast<size_t>(y) * width + x * 2 + 1] =
+          v_plane[static_cast<size_t>(y) * (width / 2) + x];
+    }
+  }
+
+  *nv12 = std::move(output);
+  return true;
 }
 
 int ClampInt(int value, int min_value, int max_value) {
@@ -273,10 +334,70 @@ struct MosaicFrame {
   int width = 0;
   int height = 0;
   int stride = 0;
-  int dmabuf_fd = -1;
   cv::Mat nv12;
-  std::shared_ptr<GstSample> sample_ref;
 };
+
+namespace {
+
+cv::Mat ComposeMosaicCpu(const std::vector<MosaicFrame>& frames,
+                         int cols,
+                         int rows,
+                         int tile_width,
+                         int tile_height,
+                         int output_width,
+                         int output_height) {
+  if (cols <= 0 || rows <= 0 || tile_width <= 0 || tile_height <= 0 ||
+      output_width <= 0 || output_height <= 0) {
+    return {};
+  }
+
+  cv::Mat mosaic(output_height * 3 / 2, output_width, CV_8UC1);
+  mosaic.rowRange(0, output_height).setTo(0);
+  mosaic.rowRange(output_height, output_height * 3 / 2).setTo(128);
+
+  for (size_t i = 0; i < frames.size(); ++i) {
+    const auto& frame = frames[i];
+    if (!frame.valid || frame.nv12.empty() || frame.width <= 0 || frame.height <= 0) {
+      continue;
+    }
+
+    const int col = static_cast<int>(i) % cols;
+    const int row = static_cast<int>(i) / cols;
+    if (row >= rows) {
+      break;
+    }
+
+    const int dst_x = col * tile_width;
+    const int dst_y = row * tile_height;
+    if (dst_x >= output_width || dst_y >= output_height) {
+      continue;
+    }
+
+    const int copy_w = std::min({frame.width, tile_width, output_width - dst_x}) & ~1;
+    const int copy_h = std::min({frame.height, tile_height, output_height - dst_y}) & ~1;
+    if (copy_w <= 0 || copy_h <= 0) {
+      continue;
+    }
+
+    for (int y = 0; y < copy_h; ++y) {
+      std::memcpy(mosaic.ptr<uint8_t>(dst_y + y) + dst_x,
+                  frame.nv12.ptr<uint8_t>(y),
+                  copy_w);
+    }
+
+    const int dst_uv_y = output_height + dst_y / 2;
+    const int src_uv_y = frame.height;
+    for (int y = 0; y < copy_h / 2; ++y) {
+      std::memcpy(mosaic.ptr<uint8_t>(dst_uv_y + y) + dst_x,
+                  frame.nv12.ptr<uint8_t>(src_uv_y + y),
+                  copy_w);
+    }
+  }
+
+  return mosaic;
+}
+
+}  // namespace
 
 struct RtspServer::CameraStream {
   RtspServer* owner = nullptr;
@@ -376,7 +497,8 @@ std::optional<cv::Mat> RtspServer::BuildOverlayNv12(CameraStream* stream, GstSam
   }
 
   GstBuffer* input = gst_sample_get_buffer(sample);
-  if (input == nullptr) {
+  GstCaps* caps = gst_sample_get_caps(sample);
+  if (input == nullptr || caps == nullptr) {
     return std::nullopt;
   }
 
@@ -392,25 +514,32 @@ std::optional<cv::Mat> RtspServer::BuildOverlayNv12(CameraStream* stream, GstSam
     return std::nullopt;
   }
 
-  auto rgb_frame = frame_converter_.ConvertToRgbFrame(sample, stream->camera_id);
-  if (!rgb_frame.has_value() || !rgb_frame->owned_data) {
+  GstVideoInfo info;
+  if (!gst_video_info_from_caps(&info, caps) ||
+      GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_NV12) {
     return std::nullopt;
   }
 
-  auto rgb_holder = std::static_pointer_cast<cv::Mat>(rgb_frame->owned_data);
-  if (!rgb_holder || rgb_holder->empty()) {
+  cv::Mat input_nv12;
+  if (!CopyNv12SampleToTightMat(sample, info, &input_nv12) || input_nv12.empty()) {
+    return std::nullopt;
+  }
+
+  cv::Mat rgb;
+  cv::cvtColor(input_nv12, rgb, cv::COLOR_YUV2RGB_NV12);
+  if (rgb.empty()) {
     return std::nullopt;
   }
 
   if (has_mediapipe_overlay) {
-    DrawMediapipeOverlay(*rgb_holder, *mediapipe_result);
+    DrawMediapipeOverlay(rgb, *mediapipe_result);
   }
   if (has_yolo_overlay) {
-    DrawYoloOverlay(*rgb_holder, *yolo_result);
+    DrawYoloOverlay(rgb, *yolo_result);
   }
 
   cv::Mat nv12;
-  if (!mediapipe_demo::ConvertRgbToNv12(*rgb_holder, &nv12) || nv12.empty()) {
+  if (!ConvertRgbToNv12Cpu(rgb, &nv12) || nv12.empty()) {
     return std::nullopt;
   }
   return nv12;
@@ -778,24 +907,12 @@ void RtspServer::PushMosaicSample(RtspRoute* route, CameraStream* stream, GstSam
   auto overlay_nv12 = BuildOverlayNv12(stream, sample);
   if (overlay_nv12.has_value() && !overlay_nv12->empty()) {
     frame.nv12 = std::move(*overlay_nv12);
-    frame.dmabuf_fd = -1;
     frame.stride = static_cast<int>(frame.nv12.step[0]);
   } else {
-    frame.dmabuf_fd = ExtractDmabufFd(input);
-    if (frame.dmabuf_fd >= 0) {
-      frame.sample_ref = HoldSampleRef(sample);
-    } else {
-      GstMapInfo map;
-      if (!gst_buffer_map(input, &map, GST_MAP_READ)) {
-        return;
-      }
-      frame.nv12 = cv::Mat(frame.height * 3 / 2, frame.width, CV_8UC1);
-      const size_t bytes = std::min(map.size, frame.nv12.total() * frame.nv12.elemSize());
-      std::memcpy(frame.nv12.data, map.data, bytes);
-      gst_buffer_unmap(input, &map);
-      frame.dmabuf_fd = -1;
-      frame.stride = static_cast<int>(frame.nv12.step[0]);
+    if (!CopyNv12SampleToTightMat(sample, info, &frame.nv12)) {
+      return;
     }
+    frame.stride = static_cast<int>(frame.nv12.step[0]);
   }
 
   GstElement* appsrc = nullptr;
@@ -842,28 +959,14 @@ void RtspServer::PushMosaicSample(RtspRoute* route, CameraStream* stream, GstSam
     }
   }
 
-  std::vector<mediapipe_demo::Nv12RgaInput> rga_inputs;
-  rga_inputs.reserve(snapshot.size());
-  for (const auto& latest : snapshot) {
-    mediapipe_demo::Nv12RgaInput rga_input;
-    rga_input.dmabuf_fd = latest.dmabuf_fd;
-    rga_input.data = latest.nv12.empty() ? nullptr : latest.nv12.data;
-    rga_input.width = latest.width;
-    rga_input.height = latest.height;
-    rga_input.stride = latest.stride;
-    rga_inputs.push_back(rga_input);
-  }
-
-  cv::Mat mosaic;
-  if (!mediapipe_demo::MosaicNv12ToNv12(rga_inputs,
-                                        route->cols,
-                                        route->rows,
-                                        route->tile_width,
-                                        route->tile_height,
-                                        route->output_width,
-                                        route->output_height,
-                                        &mosaic) ||
-      mosaic.empty()) {
+  cv::Mat mosaic = ComposeMosaicCpu(snapshot,
+                                    route->cols,
+                                    route->rows,
+                                    route->tile_width,
+                                    route->tile_height,
+                                    route->output_width,
+                                    route->output_height);
+  if (mosaic.empty()) {
     gst_object_unref(appsrc);
     return;
   }
@@ -1055,8 +1158,8 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
       route->owner = this;
       route->mount = "/cam";
       route->mosaic = true;
-      const int tile_w = cams[0]->preview_width;
-      const int tile_h = cams[0]->preview_height;
+      const int tile_w = rtsp.width > 0 ? rtsp.width : cams[0]->preview_width;
+      const int tile_h = rtsp.height > 0 ? rtsp.height : cams[0]->preview_height;
       const int n = static_cast<int>(cams.size());
       route->cols = static_cast<int>(std::ceil(std::sqrt(n)));
       route->rows = (n + route->cols - 1) / route->cols;
@@ -1093,7 +1196,7 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
       std::cerr << "rtsp mount: rtsp://0.0.0.0:" << rtsp.port << route->mount << "\n";
       std::cerr << "  capture: mosaic " << tile_w << "x" << tile_h
                 << "@" << route->fps << "fps x" << cams.size()
-                << " via RGA -> " << route->output_width << "x"
+                << " via CPU -> " << route->output_width << "x"
                 << route->output_height << "\n";
       std::cerr << "  pipeline: " << launch << "\n";
       routes_.emplace(mount, std::move(route));
@@ -1108,8 +1211,10 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
 
     const int camera_bitrate = rtsp.bitrate > 0 ? rtsp.bitrate : cam->bitrate;
     const bool h265 = Uppercase(codec) == "H265";
-    const int out_w = h265 ? AlignUp(cam->preview_width, 16) : cam->preview_width;
-    const int out_h = h265 ? AlignUp(cam->preview_height, 16) : cam->preview_height;
+    const int requested_w = rtsp.width > 0 ? rtsp.width : cam->preview_width;
+    const int requested_h = rtsp.height > 0 ? rtsp.height : cam->preview_height;
+    const int out_w = h265 ? AlignUp(requested_w, 16) : requested_w;
+    const int out_h = h265 ? AlignUp(requested_h, 16) : requested_h;
 
     auto route = std::make_shared<RtspRoute>();
     route->mount = "/" + mount;

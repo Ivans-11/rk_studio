@@ -11,7 +11,6 @@
 #include <opencv2/core.hpp>
 
 #include "rk_studio/domain/types.h"
-#include "rk_studio/media_core/frame_converter.h"
 #include "rk_studio/vision_core/vision_types.h"
 
 struct _GstRTSPServer;
@@ -60,7 +59,6 @@ class RtspServer {
   _GstRTSPServer* server_ = nullptr;
   unsigned int attach_id_ = 0;
   int port_ = 0;
-  FrameConverter frame_converter_;
   mutable std::mutex overlay_mu_;
   std::map<std::string, vision::MediapipeResult> mediapipe_results_;
   std::map<std::string, vision::YoloResult> yolo_results_;

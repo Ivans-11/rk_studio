@@ -52,8 +52,10 @@ struct YoloHardwareConfig {
 struct RtspConfig {
   int port = 8554;
   std::string codec = "h265";
-  int bitrate = 4'000'000;
-  std::vector<std::string> mounts{"cam"};
+  int bitrate = 1'800'000;
+  int width = 480;
+  int height = 272;
+  std::vector<std::string> mounts{"cam0", "cam1", "cam2", "cam3"};
 };
 
 struct ZenohConfig {

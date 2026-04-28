@@ -1,5 +1,9 @@
 [rtsp]
 mounts = ["cam"]
+codec = "h265"
+bitrate = 1200000
+width = 480
+height = 272
 
 [zenoh]
 mode = "peer"

@@ -95,6 +95,10 @@ cv::Mat ToRgbMat(const FrameRef& frame) {
   return {};
 }
 
+cv::Point2f RoiCenter(const mediapipe_demo::RoiRect& roi) {
+  return {static_cast<float>(roi.x1 + roi.x2) * 0.5f, static_cast<float>(roi.y1 + roi.y2) * 0.5f};
+}
+
 float PointDistSq(const cv::Point2f& a, const cv::Point2f& b) {
   const float dx = a.x - b.x;
   const float dy = a.y - b.y;
@@ -170,6 +174,54 @@ float RecognizeThumbsUpScore(const std::vector<cv::Point2f>& points) {
   return std::clamp(score, 0.0f, 1.0f);
 }
 
+// Greedy match: assign detections to trackers by nearest ROI center.
+// assignments[tracker_id] = index into detections, or -1 if unmatched.
+std::array<int, kMaxHands> MatchDetectionsToTrackers(
+    const std::vector<mediapipe_demo::PalmDetection>& detections,
+    const std::vector<mediapipe_demo::RoiRect>& det_rois,
+    const std::array<std::unique_ptr<mediapipe_demo::HandTracker>, kMaxHands>& trackers) {
+  std::array<int, kMaxHands> assignments;
+  assignments.fill(-1);
+  std::vector<bool> det_used(detections.size(), false);
+
+  // First pass: match trackers that have a current ROI to nearest detection
+  for (int t = 0; t < kMaxHands; ++t) {
+    const auto tracker_roi = trackers[t]->CurrentRoi();
+    if (!tracker_roi.has_value()) {
+      continue;
+    }
+    const cv::Point2f tc = RoiCenter(*tracker_roi);
+    float best_dist = std::numeric_limits<float>::max();
+    int best_d = -1;
+    for (size_t d = 0; d < det_rois.size(); ++d) {
+      if (det_used[d]) continue;
+      const float dist = PointDistSq(tc, RoiCenter(det_rois[d]));
+      if (dist < best_dist) {
+        best_dist = dist;
+        best_d = static_cast<int>(d);
+      }
+    }
+    if (best_d >= 0) {
+      assignments[t] = best_d;
+      det_used[static_cast<size_t>(best_d)] = true;
+    }
+  }
+
+  // Second pass: assign remaining detections to idle trackers
+  for (size_t d = 0; d < det_rois.size(); ++d) {
+    if (det_used[d]) continue;
+    for (int t = 0; t < kMaxHands; ++t) {
+      if (assignments[t] >= 0) continue;
+      if (trackers[t]->CurrentRoi().has_value()) continue;
+      assignments[t] = static_cast<int>(d);
+      det_used[d] = true;
+      break;
+    }
+  }
+
+  return assignments;
+}
+
 }  // namespace
 
 class MediapipeProcessor final : public IMediapipeProcessor {
@@ -181,16 +233,21 @@ class MediapipeProcessor final : public IMediapipeProcessor {
 
     config_ = config;
     pipeline_config_ = mediapipe_demo::PipelineConfig{};
+    for (int i = 0; i < kMaxHands; ++i) {
+      trackers_[i] = std::make_unique<mediapipe_demo::HandTracker>(pipeline_config_);
+    }
     if (!detector_.LoadModel(config.detector_model)) {
       if (err) {
         *err = "failed to load detector model: " + config.detector_model;
       }
+      for (auto& t : trackers_) t.reset();
       return false;
     }
     if (!landmark_.LoadModel(config.landmark_model)) {
       if (err) {
         *err = "failed to load landmark model: " + config.landmark_model;
       }
+      for (auto& t : trackers_) t.reset();
       return false;
     }
 
@@ -236,6 +293,7 @@ class MediapipeProcessor final : public IMediapipeProcessor {
       std::lock_guard<std::mutex> lock(mu_);
       results_.clear();
     }
+    for (auto& t : trackers_) t.reset();
     frame_index_ = 1;
   }
 
@@ -400,33 +458,56 @@ class MediapipeProcessor final : public IMediapipeProcessor {
     result.frame_width = frame.width;
     result.frame_height = frame.height;
 
-    std::vector<mediapipe_demo::PalmDetection> detections;
-    std::vector<mediapipe_demo::RoiRect> det_rois;
-    std::vector<float> det_scores;
-
-    mediapipe_demo::PreprocessMeta det_meta;
-
-    cv::Mat& rgb_frame = ensure_rgb();
-    if (!rgb_frame.empty()) {
-      cv::Mat det_input = mediapipe_demo::LetterboxPadding(rgb_frame, detector_size, &det_meta);
-      detections = detector_.InferMulti(det_input, det_meta, pipeline_config_.detector_score_threshold, kMaxHands);
-    }
-
-    for (const auto& det : detections) {
-      auto roi = mediapipe_demo::MakeRoiFromDetection(det.bbox, det_meta, frame.width, frame.height,
-                                                       pipeline_config_.det_scale);
-      if (roi.has_value()) {
-        det_rois.push_back(*roi);
-        det_scores.push_back(det.score);
+    // --- Detection phase: get up to 2 detections ---
+    bool any_should_detect = false;
+    for (int i = 0; i < kMaxHands; ++i) {
+      if (trackers_[i]->ShouldRunDetector(frame_index_)) {
+        any_should_detect = true;
+        break;
       }
     }
 
-    for (size_t i = 0; i < det_rois.size(); ++i) {
-      mediapipe_demo::HandTracker tracker(pipeline_config_);
-      tracker.UpdateFromDetection(det_rois[i], det_scores[i]);
-      HandResult hand = ProcessOneHand(
-          static_cast<int>(i), tracker, mediapipe_demo::TrackingMode::kDetect, frame, ensure_rgb);
-      if (!hand.landmarks.empty()) {
+    std::vector<mediapipe_demo::PalmDetection> detections;
+    std::vector<mediapipe_demo::RoiRect> det_rois;
+
+    if (any_should_detect) {
+      mediapipe_demo::PreprocessMeta det_meta;
+
+      cv::Mat& rgb_frame = ensure_rgb();
+      if (!rgb_frame.empty()) {
+        cv::Mat det_input = mediapipe_demo::LetterboxPadding(rgb_frame, detector_size, &det_meta);
+        detections = detector_.InferMulti(det_input, det_meta, pipeline_config_.detector_score_threshold, kMaxHands);
+      }
+
+      for (const auto& det : detections) {
+        auto roi = mediapipe_demo::MakeRoiFromDetection(det.bbox, det_meta, frame.width, frame.height,
+                                                         pipeline_config_.det_scale);
+        if (roi.has_value()) {
+          det_rois.push_back(*roi);
+        } else {
+          det_rois.push_back({});  // placeholder
+        }
+      }
+
+      // Match detections to trackers
+      auto assignments = MatchDetectionsToTrackers(detections, det_rois, trackers_);
+      for (int t = 0; t < kMaxHands; ++t) {
+        if (assignments[t] >= 0) {
+          const size_t d = static_cast<size_t>(assignments[t]);
+          trackers_[t]->UpdateFromDetection(det_rois[d], detections[d].score);
+        }
+      }
+    }
+
+    // --- Landmark phase: process each tracked hand ---
+    for (int i = 0; i < kMaxHands; ++i) {
+      const auto current_roi = trackers_[i]->CurrentRoi();
+      if (!current_roi.has_value()) {
+        continue;
+      }
+      mediapipe_demo::TrackingMode frame_mode = mediapipe_demo::TrackingMode::kTrack;
+      HandResult hand = ProcessOneHand(i, *trackers_[i], frame_mode, frame, ensure_rgb);
+      if (hand.tracking_mode != TrackingMode::kNoHand || !hand.landmarks.empty()) {
         result.hands.push_back(std::move(hand));
       }
     }
@@ -443,6 +524,7 @@ class MediapipeProcessor final : public IMediapipeProcessor {
   mediapipe_demo::PipelineConfig pipeline_config_;
   mediapipe_demo::PalmDetector detector_;
   mediapipe_demo::HandLandmark landmark_;
+  std::array<std::unique_ptr<mediapipe_demo::HandTracker>, kMaxHands> trackers_;
 
   std::mutex mu_;
   std::condition_variable cv_;

@@ -177,6 +177,14 @@ bool ValidateBoardConfig(const BoardConfig& config, std::string* err) {
     }
     return false;
   }
+  if (config.rtsp.has_value() &&
+      (config.rtsp->width <= 0 || config.rtsp->height <= 0 ||
+       (config.rtsp->width % 8) != 0 || (config.rtsp->height % 8) != 0)) {
+    if (err) {
+      *err = "rtsp.width and rtsp.height must be positive multiples of 8";
+    }
+    return false;
+  }
   if (config.yolo.has_value()) {
     const auto& yolo = *config.yolo;
     if (yolo.fps <= 0 || yolo.confidence_threshold <= 0.0 ||
@@ -397,7 +405,8 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
   }
 
   if (const auto* rtsp_table = root["rtsp"].as_table()) {
-    static const std::unordered_set<std::string> kAllowed{"port", "codec", "bitrate", "mounts"};
+    static const std::unordered_set<std::string> kAllowed{
+        "port", "codec", "bitrate", "width", "height", "mounts"};
     if (!RejectUnknownKeys(*rtsp_table, kAllowed, "rtsp", err)) {
       return false;
     }
@@ -405,6 +414,8 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
     if (!AssignValue(*rtsp_table, "port", &rtsp.port, "rtsp", err) ||
         !AssignValue(*rtsp_table, "codec", &rtsp.codec, "rtsp", err) ||
         !AssignValue(*rtsp_table, "bitrate", &rtsp.bitrate, "rtsp", err) ||
+        !AssignValue(*rtsp_table, "width", &rtsp.width, "rtsp", err) ||
+        !AssignValue(*rtsp_table, "height", &rtsp.height, "rtsp", err) ||
         !AssignStringArray(*rtsp_table, "mounts", &rtsp.mounts, "rtsp", err)) {
       return false;
     }

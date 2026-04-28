@@ -20,7 +20,7 @@
 namespace rkstudio::media {
 namespace {
 
-constexpr int kMediapipeFps = 10;
+constexpr int kMediapipeFps = 15;
 constexpr int kDefaultYoloFps = 5;
 constexpr float kYoloPublishMinScore = 0.7f;
 
