@@ -56,8 +56,11 @@ std::string MediapipeResultToJson(const rkstudio::vision::MediapipeResult& r) {
   for (size_t h = 0; h < r.hands.size(); ++h) {
     if (h > 0) o << ',';
     const auto& hand = r.hands[h];
-    o << "{\"id\":" << hand.hand_id
-      << ",\"gesture\":\"" << rkinfra::JsonEscape(hand.gesture) << "\"}";
+    o << "{\"id\":" << hand.hand_id;
+    if (!hand.gesture.empty()) {
+      o << ",\"gesture\":\"" << rkinfra::JsonEscape(hand.gesture) << "\"";
+    }
+    o << '}';
   }
   o << "]}";
   return o.str();

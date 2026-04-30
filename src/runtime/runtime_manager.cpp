@@ -1,6 +1,7 @@
 #include "rk_studio/runtime/runtime_manager.h"
 
 #include <cstddef>
+#include <iostream>
 #include <sstream>
 #include <string>
 
@@ -39,6 +40,18 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
   media_engine_ = new media::MediaEngine(this);
   vision_engine_ = new media::VisionEngine(this);
   vision_engine_->SetZenohPublisher(&zenoh_publisher_);
+  entity_registration_timer_ = new QTimer(this);
+  entity_registration_timer_->setInterval(5000);
+  connect(entity_registration_timer_, &QTimer::timeout, this, [this]() {
+    if (!entity_registered_) {
+      return;
+    }
+    std::string err;
+    if (!EnsureZenohStarted(&err) ||
+        !PublishEntityRegistrationAction("REG_REGISTER", &err)) {
+      std::cerr << "[zenoh] entity registration heartbeat failed: " << err << "\n";
+    }
+  });
 
   connect(media_engine_, &media::MediaEngine::TelemetryObserved,
           this, &RuntimeManager::TelemetryObserved);
@@ -195,13 +208,25 @@ bool RuntimeManager::ToggleEntityRegistration(std::string* err) {
   if (!EnsureZenohStarted(err)) {
     return false;
   }
-  const char* action = entity_registered_ ? "REG_UNREGISTER" : "REG_REGISTER";
-  if (!PublishEntityRegistrationAction(action, err)) {
+
+  if (entity_registered_) {
+    StopEntityRegistrationHeartbeat();
+    if (!PublishEntityRegistrationAction("REG_UNREGISTER", err)) {
+      StartEntityRegistrationHeartbeat();
+      StopZenohIfIdle();
+      return false;
+    }
+    entity_registered_ = false;
+    StopZenohIfIdle();
+    return true;
+  }
+
+  if (!PublishEntityRegistrationAction("REG_REGISTER", err)) {
     StopZenohIfIdle();
     return false;
   }
-  entity_registered_ = !entity_registered_;
-  StopZenohIfIdle();
+  entity_registered_ = true;
+  StartEntityRegistrationHeartbeat();
   return true;
 }
 
@@ -237,6 +262,18 @@ bool RuntimeManager::PublishEntityRegistrationAction(
     return false;
   }
   return true;
+}
+
+void RuntimeManager::StartEntityRegistrationHeartbeat() {
+  if (entity_registration_timer_ && !entity_registration_timer_->isActive()) {
+    entity_registration_timer_->start();
+  }
+}
+
+void RuntimeManager::StopEntityRegistrationHeartbeat() {
+  if (entity_registration_timer_) {
+    entity_registration_timer_->stop();
+  }
 }
 
 void RuntimeManager::StopZenohIfIdle() {
@@ -285,6 +322,7 @@ void RuntimeManager::StopResultPublishing() {
 }
 
 void RuntimeManager::StopAll() {
+  StopEntityRegistrationHeartbeat();
   entity_registered_ = false;
   zenoh_publisher_.Stop();
   if (state_ == AppState::kRecording) {

@@ -60,6 +60,8 @@ struct RtspConfig {
 
 struct ZenohConfig {
   std::string mode = "peer";
+  std::string server_ip;
+  int server_port = 7447;
   std::vector<std::string> connect;
   std::vector<std::string> listen;
   std::string key_prefix = "rk_studio";
@@ -68,10 +70,10 @@ struct ZenohConfig {
 struct EntityRegistrationConfig {
   std::string entity_id = "helmet_001";
   std::string display_name = "张三的头盔";
-  std::string owner = "human_zhangsan_001";
+  std::string owner = "operator_01";
   std::string device_type = "helmet";
-  std::string provides_channels = "video_out,heartrate,eeg";
-  std::string video_stream_url = "ws://192.168.1.20:9000/stream/zhangsan_helmet";
+  std::string provides_channels = "video_out,mediapipe";
+  std::string video_stream_url = "rtsp://172.20.10.3:8554/cam";
 };
 
 struct BoardConfig {

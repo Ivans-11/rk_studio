@@ -306,7 +306,7 @@ def parse_args() -> argparse.Namespace:
         default="halmet/mediapipe",
         help="Zenoh Mediapipe key expression, default: halmet/mediapipe",
     )
-    parser.add_argument("--mode", default="peer", choices=("peer", "client"), help="Zenoh mode")
+    parser.add_argument("--mode", default="peer", choices=("peer", "client", "router"), help="Zenoh mode")
     parser.add_argument("--connect", action="append", default=[], help="Zenoh endpoint to connect to")
     parser.add_argument("--listen", action="append", default=[], help="Zenoh endpoint to listen on")
     return parser.parse_args()
@@ -448,6 +448,10 @@ def make_handler(state: DashboardState):
     return Handler
 
 
+class DashboardHttpServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 def main() -> int:
     args = parse_args()
     stopped = threading.Event()
@@ -482,7 +486,7 @@ def main() -> int:
     registry_sub = session.declare_subscriber(args.registry_key, on_registry)
     mediapipe_sub = session.declare_subscriber(args.mediapipe_key, on_mediapipe)
 
-    httpd = ThreadingHTTPServer((args.host, args.port), make_handler(state))
+    httpd = DashboardHttpServer((args.host, args.port), make_handler(state))
     http_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     http_thread.start()
 

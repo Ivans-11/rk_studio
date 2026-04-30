@@ -3,6 +3,7 @@
 #include <string>
 
 #include <QObject>
+#include <QTimer>
 #include <QtGui/qwindowdefs.h>
 
 #include "rk_studio/domain/types.h"
@@ -56,6 +57,8 @@ class RuntimeManager : public QObject {
   void SetState(AppState state);
   bool EnsureZenohStarted(std::string* err);
   bool PublishEntityRegistrationAction(const std::string& action, std::string* err);
+  void StartEntityRegistrationHeartbeat();
+  void StopEntityRegistrationHeartbeat();
   void StopZenohIfIdle();
   void EnterErrorState();
   void OnVisionCameraError(const std::string& camera_id, const std::string& reason, bool fatal);
@@ -64,6 +67,7 @@ class RuntimeManager : public QObject {
   media::MediaEngine* media_engine_ = nullptr;
   media::VisionEngine* vision_engine_ = nullptr;
   rkinfra::ZenohPublisher zenoh_publisher_;
+  QTimer* entity_registration_timer_ = nullptr;
   bool entity_registered_ = false;
   AppState state_ = AppState::kIdle;
 };

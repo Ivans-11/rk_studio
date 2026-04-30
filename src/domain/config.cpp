@@ -209,6 +209,18 @@ bool ValidateBoardConfig(const BoardConfig& config, std::string* err) {
       }
       return false;
     }
+    if (zenoh.server_port <= 0 || zenoh.server_port > 65535) {
+      if (err) {
+        *err = "zenoh.server_port must be in 1..65535";
+      }
+      return false;
+    }
+    if (zenoh.mode == "client" && zenoh.server_ip.empty() && zenoh.connect.empty()) {
+      if (err) {
+        *err = "zenoh client mode requires server_ip or connect endpoints";
+      }
+      return false;
+    }
   }
   const auto& entity = config.entity_registration;
   if (entity.entity_id.empty() || entity.display_name.empty() ||
@@ -423,12 +435,15 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
   }
 
   if (const auto* zenoh_table = root["zenoh"].as_table()) {
-    static const std::unordered_set<std::string> kAllowed{"mode", "connect", "listen", "key_prefix"};
+    static const std::unordered_set<std::string> kAllowed{
+        "mode", "server_ip", "server_port", "connect", "listen", "key_prefix"};
     if (!RejectUnknownKeys(*zenoh_table, kAllowed, "zenoh", err)) {
       return false;
     }
     ZenohConfig zenoh;
     if (!AssignValue(*zenoh_table, "mode", &zenoh.mode, "zenoh", err) ||
+        !AssignValue(*zenoh_table, "server_ip", &zenoh.server_ip, "zenoh", err) ||
+        !AssignValue(*zenoh_table, "server_port", &zenoh.server_port, "zenoh", err) ||
         !AssignStringArray(*zenoh_table, "connect", &zenoh.connect, "zenoh", err) ||
         !AssignStringArray(*zenoh_table, "listen", &zenoh.listen, "zenoh", err) ||
         !AssignValue(*zenoh_table, "key_prefix", &zenoh.key_prefix, "zenoh", err)) {

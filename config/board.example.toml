@@ -6,7 +6,9 @@ width = 480
 height = 272
 
 [zenoh]
-mode = "peer"
+mode = "client"
+server_ip = "172.20.10.5"
+server_port = 7447
 connect = []
 listen = []
 key_prefix = "rk_studio"
@@ -14,10 +16,10 @@ key_prefix = "rk_studio"
 [entity]
 entity_id = "helmet_001"
 display_name = "张三的头盔"
-owner = "human_zhangsan_001"
+owner = "operator_01"
 device_type = "helmet"
-provides_channels = "video_out,heartrate,eeg"
-video_stream_url = "ws://192.168.1.20:9000/stream/zhangsan_helmet"
+provides_channels = "video_out,mediapipe"
+video_stream_url = "rtsp://172.20.10.3:8554/cam"
 
 [yolo]
 model = "../models/yolo11n_rk3588_int8.rknn"

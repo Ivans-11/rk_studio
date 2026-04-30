@@ -51,6 +51,14 @@ std::string NormalizePrefix(std::string prefix) {
   return prefix.empty() ? "rk_studio" : prefix;
 }
 
+std::vector<std::string> EffectiveConnectEndpoints(const rkstudio::ZenohConfig& config) {
+  std::vector<std::string> endpoints = config.connect;
+  if (!config.server_ip.empty()) {
+    endpoints.push_back("tcp/" + config.server_ip + ":" + std::to_string(config.server_port));
+  }
+  return endpoints;
+}
+
 }  // namespace
 
 class ZenohPublisher::Impl {
@@ -63,9 +71,10 @@ class ZenohPublisher::Impl {
 
     z_owned_config_t zenoh_config;
     z_config_default(&zenoh_config);
+    const std::vector<std::string> connect = EffectiveConnectEndpoints(config);
     if (!InsertConfig(zenoh_config, Z_CONFIG_MODE_KEY, JsonString(config.mode), err) ||
-        (!config.connect.empty() &&
-         !InsertConfig(zenoh_config, Z_CONFIG_CONNECT_KEY, JsonStringArray(config.connect), err)) ||
+        (!connect.empty() &&
+         !InsertConfig(zenoh_config, Z_CONFIG_CONNECT_KEY, JsonStringArray(connect), err)) ||
         (!config.listen.empty() &&
          !InsertConfig(zenoh_config, Z_CONFIG_LISTEN_KEY, JsonStringArray(config.listen), err))) {
       z_drop(z_move(zenoh_config));

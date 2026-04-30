@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -117,9 +118,15 @@ float ProjectFromWrist(const std::vector<cv::Point2f>& points, int index, const 
   return Dot(points[index] - points[0], axis);
 }
 
-float RecognizeThumbsUpScore(const std::vector<cv::Point2f>& points) {
+struct GestureRecognition {
+  std::string gesture;
+  float score = 0.0f;
+};
+
+GestureRecognition RecognizeHandGesture(const std::vector<cv::Point2f>& points) {
+  GestureRecognition result;
   if (points.size() < 21) {
-    return 0.0f;
+    return result;
   }
 
   const cv::Point2f wrist = points[0];
@@ -132,13 +139,8 @@ float RecognizeThumbsUpScore(const std::vector<cv::Point2f>& points) {
   palm_axis.x /= axis_len;
   palm_axis.y /= axis_len;
 
-  const float thumb_projection = Dot(points[4] - points[2], palm_axis);
-  const bool thumb_extended =
-      thumb_projection > 0.32f * palm_size &&
-      ProjectFromWrist(points, 4, palm_axis) > ProjectFromWrist(points, 3, palm_axis) + 0.08f * palm_size &&
-      PointDist(points[4], points[2]) > 0.35f * palm_size;
-  const bool thumb_points_up = points[4].y < points[2].y - 0.12f * palm_size &&
-                               points[4].y < wrist.y;
+  const cv::Point2f palm_center =
+      (wrist + points[5] + points[9] + points[13] + points[17]) * 0.2f;
 
   constexpr std::array<std::array<int, 3>, 4> kFingers = {{
       {{5, 6, 8}},
@@ -148,30 +150,53 @@ float RecognizeThumbsUpScore(const std::vector<cv::Point2f>& points) {
   }};
 
   int folded_count = 0;
+  int extended_count = 0;
   for (const auto& finger : kFingers) {
     const int mcp = finger[0];
     const int pip = finger[1];
     const int tip = finger[2];
     const float tip_proj = ProjectFromWrist(points, tip, palm_axis);
     const float pip_proj = ProjectFromWrist(points, pip, palm_axis);
-    const bool folded_by_axis = tip_proj < pip_proj + 0.08f * palm_size;
-    const bool folded_near_palm = PointDist(points[tip], points[mcp]) < 0.72f * palm_size;
+    const bool extended_by_axis = tip_proj > pip_proj + 0.16f * palm_size;
+    const bool extended_far_from_mcp = PointDist(points[tip], points[mcp]) > 0.62f * palm_size;
+    const bool folded_by_axis = tip_proj < pip_proj + 0.06f * palm_size;
+    const bool folded_near_palm = PointDist(points[tip], palm_center) < 0.72f * palm_size ||
+                                  PointDist(points[tip], points[mcp]) < 0.55f * palm_size;
+    if (extended_by_axis && extended_far_from_mcp) {
+      ++extended_count;
+    }
     if (folded_by_axis || folded_near_palm) {
       ++folded_count;
     }
   }
 
-  if (!thumb_extended || !thumb_points_up || folded_count < 3) {
-    return 0.0f;
+  const float thumb_len = PointDist(points[2], points[4]);
+  const float thumb_to_palm = PointDist(points[4], palm_center);
+  const bool thumb_extended = thumb_len > 0.35f * palm_size &&
+                              thumb_to_palm > 0.55f * palm_size &&
+                              PointDist(points[4], points[8]) > 0.45f * palm_size;
+  const bool thumb_folded = thumb_to_palm < 0.70f * palm_size ||
+                            PointDist(points[4], points[5]) < 0.55f * palm_size ||
+                            PointDist(points[4], points[9]) < 0.62f * palm_size;
+
+  if (extended_count == 4 && thumb_extended) {
+    const float tip_spread = PointDist(points[8], points[20]);
+    if (tip_spread > 1.05f * palm_width) {
+      result.gesture = "open_palm";
+      result.score = std::clamp(0.58f + 0.08f * static_cast<float>(extended_count) +
+                                    std::min(0.10f, (tip_spread - palm_width) / palm_size),
+                                0.0f, 1.0f);
+      return result;
+    }
   }
 
-  float score = 0.45f;
-  score += 0.12f * static_cast<float>(folded_count);
-  score += std::min(0.20f, std::max(0.0f, (thumb_projection - 0.32f * palm_size) / palm_size));
-  if (folded_count == 4) {
-    score += 0.08f;
+  if (folded_count == 4 && thumb_folded) {
+    result.gesture = "fist";
+    result.score = std::clamp(0.60f + 0.08f * static_cast<float>(folded_count), 0.0f, 1.0f);
+    return result;
   }
-  return std::clamp(score, 0.0f, 1.0f);
+
+  return result;
 }
 
 // Greedy match: assign detections to trackers by nearest ROI center.
@@ -423,10 +448,9 @@ class MediapipeProcessor final : public IMediapipeProcessor {
         for (const auto& point : landmarks->points) {
           hand.landmarks.push_back(Landmark3f{point.x, point.y, point.z});
         }
-        hand.gesture_score = RecognizeThumbsUpScore(global_points);
-        if (hand.gesture_score > 0.0f) {
-          hand.gesture = "thumbs_up";
-        }
+        const GestureRecognition gesture = RecognizeHandGesture(global_points);
+        hand.gesture = gesture.gesture;
+        hand.gesture_score = gesture.score;
         hand.motion_norm = motion_norm;
         hand.rotation_deg = align_rotation_deg;
         hand.fast_motion_cooldown = tracker.FastMotionCooldown();
