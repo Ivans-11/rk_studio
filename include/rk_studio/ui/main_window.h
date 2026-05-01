@@ -28,12 +28,14 @@ class MainWindow : public QMainWindow {
   void ToggleEntityRegistration();
   void ToggleMediapipe();
   void ToggleYolo();
+  void ToggleFaceExpression();
   void OnStateChanged(rkstudio::AppState state);
   void OnTelemetryObserved(rkstudio::TelemetryEvent event);
   void OnPreviewFailure(QString camera_id, QString reason, bool fatal);
   void OnTileRebound(QString camera_id, WId window_id);
   void OnMediapipeResult(rkstudio::vision::MediapipeResult result);
   void OnYoloResult(rkstudio::vision::YoloResult result);
+  void OnFaceExpressionResult(rkstudio::vision::FaceExpressionResult result);
 
  private:
   void BuildUi();
@@ -56,6 +58,7 @@ class MainWindow : public QMainWindow {
   QPushButton* result_publish_button_ = nullptr;
   QPushButton* mediapipe_toggle_button_ = nullptr;
   QPushButton* yolo_toggle_button_ = nullptr;
+  QPushButton* face_expression_toggle_button_ = nullptr;
   QPlainTextEdit* log_view_ = nullptr;
   std::map<QString, PreviewTileWidget*> tiles_;
   int telemetry_ok_skip_counter_ = 0;

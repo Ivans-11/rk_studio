@@ -27,7 +27,18 @@ class IYoloProcessor {
   virtual void Stop() = 0;
 };
 
+class IFaceExpressionProcessor {
+ public:
+  virtual ~IFaceExpressionProcessor() = default;
+
+  virtual bool Start(const FaceExpressionProcessorConfig& config, std::string* err) = 0;
+  virtual void Submit(const FrameRef& frame) = 0;
+  virtual std::optional<FaceExpressionResult> PollResult() = 0;
+  virtual void Stop() = 0;
+};
+
 std::unique_ptr<IMediapipeProcessor> CreateMediapipeProcessor();
 std::unique_ptr<IYoloProcessor> CreateYoloProcessor();
+std::unique_ptr<IFaceExpressionProcessor> CreateFaceExpressionProcessor();
 
 }  // namespace rkstudio::vision

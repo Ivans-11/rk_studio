@@ -195,6 +195,17 @@ bool ValidateBoardConfig(const BoardConfig& config, std::string* err) {
       return false;
     }
   }
+  if (config.face_expression.has_value()) {
+    const auto& face = *config.face_expression;
+    if (face.fps <= 0 || face.confidence_threshold <= 0.0 ||
+        face.nms_threshold <= 0.0 || face.expression_threshold < 0.0 ||
+        face.max_faces <= 0) {
+      if (err) {
+        *err = "face_expression fps/thresholds/max_faces are invalid";
+      }
+      return false;
+    }
+  }
   if (config.zenoh.has_value()) {
     const auto& zenoh = *config.zenoh;
     if (zenoh.mode != "peer" && zenoh.mode != "client" && zenoh.mode != "router") {
@@ -282,6 +293,32 @@ bool ValidateSessionProfile(const SessionProfile& profile, std::string* err) {
     if (!in_preview || !in_record) {
       if (err) {
         *err = "selected_yolo_camera '" + yolo_cam + "' must be in both preview_cameras and record_cameras";
+      }
+      return false;
+    }
+  }
+  if (!profile.selected_face_camera.empty()) {
+    const auto& face_cam = profile.selected_face_camera;
+    const bool in_preview = std::find(profile.preview_cameras.begin(), profile.preview_cameras.end(), face_cam) !=
+                            profile.preview_cameras.end();
+    const bool in_record = profile.record_cameras.empty() ||
+                           std::find(profile.record_cameras.begin(), profile.record_cameras.end(), face_cam) !=
+                               profile.record_cameras.end();
+    if (!in_preview || !in_record) {
+      if (err) {
+        *err = "selected_face_camera '" + face_cam + "' must be in both preview_cameras and record_cameras";
+      }
+      return false;
+    }
+    if (!profile.selected_mediapipe_camera.empty() && face_cam == profile.selected_mediapipe_camera) {
+      if (err) {
+        *err = "selected_face_camera must differ from selected_mediapipe_camera";
+      }
+      return false;
+    }
+    if (!profile.selected_yolo_camera.empty() && face_cam == profile.selected_yolo_camera) {
+      if (err) {
+        *err = "selected_face_camera must differ from selected_yolo_camera";
       }
       return false;
     }
@@ -416,6 +453,44 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
     parsed.yolo.reset();
   }
 
+  if (const auto* face_table = root["face_expression"].as_table()) {
+    static const std::unordered_set<std::string> kAllowed{
+        "detector_model", "expression_model", "expression_labels",
+        "fps", "confidence_threshold", "nms_threshold",
+        "expression_threshold", "max_faces"};
+    if (!RejectUnknownKeys(*face_table, kAllowed, "face_expression", err)) {
+      return false;
+    }
+    FaceExpressionHardwareConfig face;
+    if (!AssignValue(*face_table, "detector_model", &face.detector_model, "face_expression", err) ||
+        !AssignValue(*face_table, "expression_model", &face.expression_model, "face_expression", err) ||
+        !AssignStringArray(*face_table, "expression_labels", &face.expression_labels, "face_expression", err) ||
+        !AssignValue(*face_table, "fps", &face.fps, "face_expression", err) ||
+        !AssignValue(*face_table, "confidence_threshold", &face.confidence_threshold, "face_expression", err) ||
+        !AssignValue(*face_table, "nms_threshold", &face.nms_threshold, "face_expression", err) ||
+        !AssignValue(*face_table, "expression_threshold", &face.expression_threshold, "face_expression", err) ||
+        !AssignValue(*face_table, "max_faces", &face.max_faces, "face_expression", err)) {
+      return false;
+    }
+    parsed.face_expression = face;
+  }
+
+  if (!parsed.face_expression.has_value()) {
+    parsed.face_expression = FaceExpressionHardwareConfig{};
+  }
+  auto& face = *parsed.face_expression;
+  face.detector_model = ResolveConfigRelativePath(path, face.detector_model);
+  face.expression_model = ResolveConfigRelativePath(path, face.expression_model);
+  if (face.detector_model.empty()) {
+    face.detector_model = ResolveModelPath(path, "face_detection_yunet_2023mar_rk3588_int8.rknn");
+  }
+  if (face.expression_model.empty()) {
+    face.expression_model = ResolveModelPath(path, "face_expression_mobilefacenet_2022july_rk3588_int8.rknn");
+  }
+  if (face.detector_model.empty() || face.expression_model.empty()) {
+    parsed.face_expression.reset();
+  }
+
   if (const auto* rtsp_table = root["rtsp"].as_table()) {
     static const std::unordered_set<std::string> kAllowed{
         "port", "codec", "bitrate", "width", "height", "mounts"};
@@ -501,7 +576,7 @@ bool LoadSessionProfile(const std::string& path, SessionProfile* profile, std::s
   if (const auto* session = root["session"].as_table()) {
     static const std::unordered_set<std::string> kAllowed{
         "preview_cameras", "record_cameras", "output_dir", "prefix", "audio_source",
-        "selected_mediapipe_camera", "selected_yolo_camera"};
+        "selected_mediapipe_camera", "selected_yolo_camera", "selected_face_camera"};
     if (!RejectUnknownKeys(*session, kAllowed, "session", err) ||
         !AssignStringArray(*session, "preview_cameras", &parsed.preview_cameras, "session", err) ||
         !AssignStringArray(*session, "record_cameras", &parsed.record_cameras, "session", err) ||
@@ -509,7 +584,8 @@ bool LoadSessionProfile(const std::string& path, SessionProfile* profile, std::s
         !AssignValue(*session, "prefix", &parsed.prefix, "session", err) ||
         !AssignValue(*session, "audio_source", &parsed.audio_source, "session", err) ||
         !AssignValue(*session, "selected_mediapipe_camera", &parsed.selected_mediapipe_camera, "session", err) ||
-        !AssignValue(*session, "selected_yolo_camera", &parsed.selected_yolo_camera, "session", err)) {
+        !AssignValue(*session, "selected_yolo_camera", &parsed.selected_yolo_camera, "session", err) ||
+        !AssignValue(*session, "selected_face_camera", &parsed.selected_face_camera, "session", err)) {
       return false;
     }
   }

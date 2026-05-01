@@ -51,12 +51,23 @@ class ResultOverlayWidget final : public QWidget {
     update();
   }
 
+  void SetFaceExpressionResult(const vision::FaceExpressionResult& result) {
+    face_expression_result_ = result;
+    update();
+  }
+
+  void ClearFaceExpressionResult() {
+    face_expression_result_.reset();
+    update();
+  }
+
  protected:
   void paintEvent(QPaintEvent*) override {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
     DrawMediapipe(painter, rect());
     DrawYolo(painter, rect());
+    DrawFaceExpression(painter, rect());
     DrawDebug(painter, rect());
   }
 
@@ -93,6 +104,9 @@ class ResultOverlayWidget final : public QWidget {
     }
     if (yolo_result_.has_value()) {
       return {yolo_result_->frame_width, yolo_result_->frame_height};
+    }
+    if (face_expression_result_.has_value()) {
+      return {face_expression_result_->frame_width, face_expression_result_->frame_height};
     }
     return {0, 0};
   }
@@ -219,8 +233,51 @@ class ResultOverlayWidget final : public QWidget {
     }
   }
 
+  void DrawFaceExpression(QPainter& painter, const QRect& target) {
+    if (!face_expression_result_.has_value()) {
+      return;
+    }
+
+    const QColor color(180, 80, 255);
+    const QColor point_color(255, 220, 80);
+    painter.setFont(QFont(painter.font().family(), 10, QFont::DemiBold));
+    const int source_w = face_expression_result_->frame_width;
+    const int source_h = face_expression_result_->frame_height;
+    for (const auto& face : face_expression_result_->faces) {
+      const QRectF box(
+          MapPoint(target, source_w, source_h, static_cast<float>(face.box.x1), static_cast<float>(face.box.y1)),
+          MapPoint(target, source_w, source_h, static_cast<float>(face.box.x2), static_cast<float>(face.box.y2)));
+      const QRectF normalized = box.normalized();
+
+      painter.setPen(QPen(color, 2));
+      painter.setBrush(Qt::NoBrush);
+      painter.drawRect(normalized);
+
+      const QString expression = face.expression.empty()
+                                     ? QStringLiteral("face")
+                                     : QString::fromStdString(face.expression);
+      const QString label = QString("%1  %2").arg(expression).arg(face.expression_score, 0, 'f', 2);
+      const QRect label_rect = painter.fontMetrics().boundingRect(label).adjusted(-4, -2, 4, 2);
+      QRectF label_box(normalized.left(), normalized.top() - label_rect.height(),
+                       label_rect.width(), label_rect.height());
+      if (label_box.top() < target.top()) {
+        label_box.moveTop(normalized.top());
+      }
+      painter.fillRect(label_box, color);
+      painter.setPen(Qt::black);
+      painter.drawText(label_box.adjusted(4, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft, label);
+
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(point_color);
+      for (const auto& point : face.landmarks) {
+        painter.drawEllipse(MapPoint(target, source_w, source_h, point.x, point.y), 3.0, 3.0);
+      }
+    }
+  }
+
   std::optional<vision::MediapipeResult> mediapipe_result_;
   std::optional<vision::YoloResult> yolo_result_;
+  std::optional<vision::FaceExpressionResult> face_expression_result_;
 };
 
 }  // namespace
@@ -376,6 +433,20 @@ void PreviewTileWidget::ClearYoloResult() {
   UpdateOverlayGeometry();
   if (auto* overlay = static_cast<ResultOverlayWidget*>(overlay_)) {
     overlay->ClearYoloResult();
+  }
+}
+
+void PreviewTileWidget::SetFaceExpressionResult(const vision::FaceExpressionResult& result) {
+  UpdateOverlayGeometry();
+  if (auto* overlay = static_cast<ResultOverlayWidget*>(overlay_)) {
+    overlay->SetFaceExpressionResult(result);
+  }
+}
+
+void PreviewTileWidget::ClearFaceExpressionResult() {
+  UpdateOverlayGeometry();
+  if (auto* overlay = static_cast<ResultOverlayWidget*>(overlay_)) {
+    overlay->ClearFaceExpressionResult();
   }
 }
 

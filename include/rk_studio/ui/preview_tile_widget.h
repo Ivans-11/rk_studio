@@ -23,6 +23,8 @@ class PreviewTileWidget : public QWidget {
   void ClearMediapipeResult();
   void SetYoloResult(const vision::YoloResult& result);
   void ClearYoloResult();
+  void SetFaceExpressionResult(const vision::FaceExpressionResult& result);
+  void ClearFaceExpressionResult();
 
  signals:
   void WindowRebound(QString camera_id, WId window_id);

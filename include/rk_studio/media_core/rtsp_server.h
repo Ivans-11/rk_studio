@@ -36,8 +36,10 @@ class RtspServer {
   int port() const { return port_; }
   void UpdateMediapipeResult(const vision::MediapipeResult& result);
   void UpdateYoloResult(const vision::YoloResult& result);
+  void UpdateFaceExpressionResult(const vision::FaceExpressionResult& result);
   void ClearMediapipeResult(const std::string& camera_id);
   void ClearYoloResult(const std::string& camera_id);
+  void ClearFaceExpressionResult(const std::string& camera_id);
 
  private:
   struct CameraStream;
@@ -53,6 +55,7 @@ class RtspServer {
   void PushMosaicSample(RtspRoute* route, CameraStream* stream, GstSample* sample);
   std::optional<vision::MediapipeResult> LatestMediapipeResult(const std::string& camera_id) const;
   std::optional<vision::YoloResult> LatestYoloResult(const std::string& camera_id) const;
+  std::optional<vision::FaceExpressionResult> LatestFaceExpressionResult(const std::string& camera_id) const;
   void StopRouteMedia();
   void StopCameraStreams();
 
@@ -62,6 +65,7 @@ class RtspServer {
   mutable std::mutex overlay_mu_;
   std::map<std::string, vision::MediapipeResult> mediapipe_results_;
   std::map<std::string, vision::YoloResult> yolo_results_;
+  std::map<std::string, vision::FaceExpressionResult> face_expression_results_;
   std::map<std::string, std::shared_ptr<RtspRoute>> routes_;
   std::map<std::string, std::shared_ptr<CameraStream>> camera_streams_;
 };

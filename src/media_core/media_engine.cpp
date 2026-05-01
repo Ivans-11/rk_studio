@@ -161,6 +161,12 @@ void MediaEngine::UpdateYoloResult(const vision::YoloResult& result) {
   }
 }
 
+void MediaEngine::UpdateFaceExpressionResult(const vision::FaceExpressionResult& result) {
+  if (rtsp_server_) {
+    rtsp_server_->UpdateFaceExpressionResult(result);
+  }
+}
+
 void MediaEngine::ClearMediapipeResult(const std::string& camera_id) {
   if (rtsp_server_) {
     rtsp_server_->ClearMediapipeResult(camera_id);
@@ -170,6 +176,12 @@ void MediaEngine::ClearMediapipeResult(const std::string& camera_id) {
 void MediaEngine::ClearYoloResult(const std::string& camera_id) {
   if (rtsp_server_) {
     rtsp_server_->ClearYoloResult(camera_id);
+  }
+}
+
+void MediaEngine::ClearFaceExpressionResult(const std::string& camera_id) {
+  if (rtsp_server_) {
+    rtsp_server_->ClearFaceExpressionResult(camera_id);
   }
 }
 

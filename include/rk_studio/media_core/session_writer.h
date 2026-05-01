@@ -37,6 +37,8 @@ class SessionWriter {
   void WriteMediapipeLine(const std::string& line);
   bool OpenYoloWriter(std::string* err);
   void WriteYoloLine(const std::string& line);
+  bool OpenFaceExpressionWriter(std::string* err);
+  void WriteFaceExpressionLine(const std::string& line);
 
   void WriteStartMeta(const std::vector<rkinfra::OutputStreamInfo>& outputs);
   void Finalize(bool ok, const std::vector<rkinfra::OutputStreamInfo>& outputs);
@@ -54,6 +56,7 @@ class SessionWriter {
   JsonlFileWriter studio_event_writer_;
   std::unique_ptr<JsonlFileWriter> mediapipe_writer_;
   std::unique_ptr<JsonlFileWriter> yolo_writer_;
+  std::unique_ptr<JsonlFileWriter> face_expression_writer_;
   std::mutex event_mu_;
   std::string recording_started_utc_;
   uint64_t recording_start_monotonic_ns_ = 0;

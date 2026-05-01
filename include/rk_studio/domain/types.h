@@ -49,6 +49,17 @@ struct YoloHardwareConfig {
   int max_detections = 50;
 };
 
+struct FaceExpressionHardwareConfig {
+  std::string detector_model;      // resolved at runtime if empty
+  std::string expression_model;    // resolved at runtime if empty
+  std::vector<std::string> expression_labels;
+  int fps = 10;
+  double confidence_threshold = 0.5;
+  double nms_threshold = 0.4;
+  double expression_threshold = 0.35;
+  int max_faces = 1;
+};
+
 struct RtspConfig {
   int port = 8554;
   std::string codec = "h265";
@@ -82,6 +93,7 @@ struct BoardConfig {
   std::vector<std::string> sink_priority{"ximagesink", "glimagesink"};
   std::optional<MediapipeHardwareConfig> mediapipe;
   std::optional<YoloHardwareConfig> yolo;
+  std::optional<FaceExpressionHardwareConfig> face_expression;
   std::optional<RtspConfig> rtsp;
   std::optional<ZenohConfig> zenoh;
   EntityRegistrationConfig entity_registration;
@@ -95,6 +107,7 @@ struct SessionProfile {
   std::string audio_source = "mic0";
   std::string selected_mediapipe_camera;
   std::string selected_yolo_camera;
+  std::string selected_face_camera;
   int preview_rows = 2;
   int preview_cols = 2;
   int gop = 30;

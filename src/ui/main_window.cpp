@@ -64,6 +64,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(runtime_manager_, &runtime::RuntimeManager::PreviewCameraFailed, this, &MainWindow::OnPreviewFailure);
   connect(runtime_manager_, &runtime::RuntimeManager::MediapipeResultReady, this, &MainWindow::OnMediapipeResult);
   connect(runtime_manager_, &runtime::RuntimeManager::YoloResultReady, this, &MainWindow::OnYoloResult);
+  connect(runtime_manager_, &runtime::RuntimeManager::FaceExpressionResultReady,
+          this, &MainWindow::OnFaceExpressionResult);
 
   if (QFileInfo::exists(board_config_path_) && QFileInfo::exists(profile_path_)) {
     LoadConfigFiles();
@@ -98,12 +100,14 @@ void MainWindow::BuildUi() {
   result_publish_button_ = new QPushButton(QStringLiteral("发送识别结果"), side_panel);
   mediapipe_toggle_button_ = new QPushButton(QStringLiteral("启动 Mediapipe"), side_panel);
   yolo_toggle_button_ = new QPushButton(QStringLiteral("启动 YOLO"), side_panel);
+  face_expression_toggle_button_ = new QPushButton(QStringLiteral("启动面部表情"), side_panel);
   record_button_->setEnabled(false);
   rtsp_button_->setEnabled(false);
   entity_registry_button_->setEnabled(false);
   result_publish_button_->setEnabled(false);
   mediapipe_toggle_button_->setEnabled(false);
   yolo_toggle_button_->setEnabled(false);
+  face_expression_toggle_button_->setEnabled(false);
 
   state_label_ = new QLabel(QStringLiteral("状态: Idle"), side_panel);
   summary_label_ = new QLabel(QStringLiteral("等待配置"), side_panel);
@@ -120,6 +124,7 @@ void MainWindow::BuildUi() {
   side_layout->addWidget(result_publish_button_);
   side_layout->addWidget(mediapipe_toggle_button_);
   side_layout->addWidget(yolo_toggle_button_);
+  side_layout->addWidget(face_expression_toggle_button_);
   side_layout->addWidget(state_label_);
   side_layout->addWidget(summary_label_);
   side_layout->addWidget(log_view_, 1);
@@ -136,6 +141,7 @@ void MainWindow::BuildUi() {
   connect(result_publish_button_, &QPushButton::clicked, this, &MainWindow::ToggleResultPublishing);
   connect(mediapipe_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleMediapipe);
   connect(yolo_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleYolo);
+  connect(face_expression_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleFaceExpression);
 }
 
 void MainWindow::RebuildTiles() {
@@ -182,6 +188,7 @@ void MainWindow::LoadConfigFiles() {
   if (runtime_manager_->state() != AppState::kIdle ||
       runtime_manager_->mediapipe_enabled() ||
       runtime_manager_->yolo_enabled() ||
+      runtime_manager_->face_expression_enabled() ||
       runtime_manager_->zenoh_enabled()) {
     runtime_manager_->StopAll();
   }
@@ -267,6 +274,7 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
     bool result_publish_enabled;
     bool mediapipe_enabled;
     bool yolo_enabled;
+    bool face_expression_enabled;
   };
 
   static const auto kTable = [] {
@@ -279,12 +287,14 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         true,
         true,
         true,
+        true,
         true};
     t[rkstudio::AppState::kPreviewing] = {
         "Previewing",
         QStringLiteral("关闭预览"), true,
         QStringLiteral("启动录制"), true,
         QStringLiteral("启动 RTSP"), true,
+        true,
         true,
         true,
         true,
@@ -297,6 +307,7 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         false,
         false,
         false,
+        false,
         false};
     t[rkstudio::AppState::kStreaming] = {
         "Streaming",
@@ -306,12 +317,14 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         true,
         true,
         true,
+        true,
         true};
     t[rkstudio::AppState::kError] = {
         "Error",
         QStringLiteral("启动预览"), true,
         QStringLiteral("启动录制"), false,
         QStringLiteral("启动 RTSP"), false,
+        false,
         false,
         false,
         false,
@@ -342,13 +355,18 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
       runtime_manager_->board_config().zenoh.has_value() &&
       (runtime_manager_->result_publishing_enabled() ||
        runtime_manager_->mediapipe_enabled() ||
-       runtime_manager_->yolo_enabled()));
+       runtime_manager_->yolo_enabled() ||
+       runtime_manager_->face_expression_enabled()));
   mediapipe_toggle_button_->setText(runtime_manager_->mediapipe_enabled() ? QStringLiteral("关闭 Mediapipe")
                                                                        : QStringLiteral("启动 Mediapipe"));
   yolo_toggle_button_->setText(runtime_manager_->yolo_enabled() ? QStringLiteral("关闭 YOLO")
                                                              : QStringLiteral("启动 YOLO"));
+  face_expression_toggle_button_->setText(runtime_manager_->face_expression_enabled()
+                                              ? QStringLiteral("关闭面部表情")
+                                              : QStringLiteral("启动面部表情"));
   mediapipe_toggle_button_->setEnabled(row.mediapipe_enabled);
   yolo_toggle_button_->setEnabled(row.yolo_enabled);
+  face_expression_toggle_button_->setEnabled(row.face_expression_enabled);
   state_label_->setText(QString("状态: %1").arg(row.label));
 }
 
@@ -443,6 +461,44 @@ void MainWindow::OnYoloResult(rkstudio::vision::YoloResult result) {
                   .arg(QString::fromStdString(result.camera_id))
                   .arg(QString::fromStdString(result.error)));
     return;
+  }
+}
+
+void MainWindow::ToggleFaceExpression() {
+  const bool enabling = !runtime_manager_->face_expression_enabled();
+  face_expression_toggle_button_->setText(enabling ? QStringLiteral("关闭面部表情")
+                                                   : QStringLiteral("启动面部表情"));
+
+  std::string err;
+  if (!runtime_manager_->ToggleFaceExpression(enabling, &err)) {
+    QMessageBox::warning(this, QStringLiteral("面部表情切换失败"), QString::fromStdString(err));
+    face_expression_toggle_button_->setText(runtime_manager_->face_expression_enabled()
+                                                ? QStringLiteral("关闭面部表情")
+                                                : QStringLiteral("启动面部表情"));
+    return;
+  }
+
+  if (!enabling) {
+    const QString camera_id = QString::fromStdString(runtime_manager_->session_profile().selected_face_camera);
+    if (const auto it = tiles_.find(camera_id); it != tiles_.end()) {
+      it->second->ClearFaceExpressionResult();
+    }
+  }
+  OnStateChanged(runtime_manager_->state());
+}
+
+void MainWindow::OnFaceExpressionResult(rkstudio::vision::FaceExpressionResult result) {
+  if (runtime_manager_->state() == rkstudio::AppState::kPreviewing) {
+    const QString camera_id = QString::fromStdString(result.camera_id);
+    if (const auto it = tiles_.find(camera_id); it != tiles_.end()) {
+      it->second->SetFaceExpressionResult(result);
+    }
+  }
+
+  if (!result.ok) {
+    AppendLog(QString("[face] %1 error: %2")
+                  .arg(QString::fromStdString(result.camera_id))
+                  .arg(QString::fromStdString(result.error)));
   }
 }
 

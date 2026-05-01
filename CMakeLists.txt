@@ -13,7 +13,7 @@ set(CMAKE_AUTOUIC ON)
 # Core dependencies.
 find_package(Threads REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d)
 find_package(zenohc REQUIRED)
 find_package(PkgConfig REQUIRED)
 
@@ -55,6 +55,7 @@ set(RK_STUDIO_SOURCES
   src/vision_core/coco_labels.cpp
   src/vision_core/mediapipe_processor.cpp
   src/vision_core/yolo_processor.cpp
+  src/vision_core/face_expression_processor.cpp
 )
 
 set(RK_STUDIO_MEDIAPIPE_SOURCES

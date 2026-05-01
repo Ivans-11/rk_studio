@@ -108,4 +108,51 @@ struct YoloResult {
   std::string error;
 };
 
+struct FaceLandmark2f {
+  float x = 0.0f;
+  float y = 0.0f;
+};
+
+struct ExpressionScore {
+  std::string label;
+  float score = 0.0f;
+};
+
+struct ActionUnitScore {
+  std::string name;
+  float score = 0.0f;
+};
+
+struct FaceExpressionResultItem {
+  int face_id = -1;
+  RoiRect box;
+  std::vector<FaceLandmark2f> landmarks;
+  std::string expression;
+  float expression_score = 0.0f;
+  std::vector<ExpressionScore> expression_scores;
+  std::vector<ActionUnitScore> action_units;
+};
+
+struct FaceExpressionProcessorConfig {
+  std::string detector_model;
+  std::string expression_model;
+  std::vector<std::string> expression_labels;
+  int queue_depth = 1;
+  float confidence_threshold = 0.5f;
+  float nms_threshold = 0.4f;
+  float expression_threshold = 0.35f;
+  int max_faces = 1;
+};
+
+struct FaceExpressionResult {
+  std::string camera_id;
+  uint64_t pts_ns = 0;
+  int frame_width = 0;
+  int frame_height = 0;
+  std::vector<FaceExpressionResultItem> faces;
+  float fps = 0.0f;
+  bool ok = false;
+  std::string error;
+};
+
 }  // namespace rkstudio::vision

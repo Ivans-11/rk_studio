@@ -45,8 +45,10 @@ class MediaEngine : public QObject {
   void StopAll();
   void UpdateMediapipeResult(const vision::MediapipeResult& result);
   void UpdateYoloResult(const vision::YoloResult& result);
+  void UpdateFaceExpressionResult(const vision::FaceExpressionResult& result);
   void ClearMediapipeResult(const std::string& camera_id);
   void ClearYoloResult(const std::string& camera_id);
+  void ClearFaceExpressionResult(const std::string& camera_id);
 
   void BindPreviewWindow(const std::string& camera_id, WId window_id);
   void ObserveTelemetry(const TelemetryEvent& event);

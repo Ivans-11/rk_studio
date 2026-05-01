@@ -36,9 +36,11 @@ class RuntimeManager : public QObject {
   void BindPreviewWindow(const std::string& camera_id, WId window_id);
   bool ToggleMediapipe(bool enable, std::string* err);
   bool ToggleYolo(bool enable, std::string* err);
+  bool ToggleFaceExpression(bool enable, std::string* err);
 
   bool mediapipe_enabled() const;
   bool yolo_enabled() const;
+  bool face_expression_enabled() const;
   bool zenoh_enabled() const;
   bool result_publishing_enabled() const;
   bool entity_registered() const;
@@ -52,6 +54,7 @@ class RuntimeManager : public QObject {
   void PreviewCameraFailed(QString camera_id, QString reason, bool fatal);
   void MediapipeResultReady(rkstudio::vision::MediapipeResult result);
   void YoloResultReady(rkstudio::vision::YoloResult result);
+  void FaceExpressionResultReady(rkstudio::vision::FaceExpressionResult result);
 
  private:
   void SetState(AppState state);

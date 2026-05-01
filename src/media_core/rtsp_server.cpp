@@ -327,6 +327,38 @@ void DrawYoloOverlay(cv::Mat& rgb, const vision::YoloResult& result) {
   }
 }
 
+void DrawFaceExpressionOverlay(cv::Mat& rgb, const vision::FaceExpressionResult& result) {
+  if (!result.ok || result.faces.empty()) {
+    return;
+  }
+
+  const cv::Scalar color(180, 80, 255);
+  const cv::Scalar point_color(255, 220, 80);
+  const int source_w = result.frame_width > 0 ? result.frame_width : rgb.cols;
+  const int source_h = result.frame_height > 0 ? result.frame_height : rgb.rows;
+  for (const auto& face : result.faces) {
+    const cv::Rect box =
+        MapOverlayRect(face.box, source_w, source_h, rgb.cols, rgb.rows);
+    if (box.width <= 0 || box.height <= 0) {
+      continue;
+    }
+    cv::rectangle(rgb, box, color, 2, cv::LINE_AA);
+
+    std::ostringstream label;
+    label.setf(std::ios::fixed);
+    label.precision(2);
+    label << (face.expression.empty() ? "face" : face.expression)
+          << " " << face.expression_score;
+    DrawLabel(rgb, label.str(), box.tl(), color);
+
+    for (const auto& landmark : face.landmarks) {
+      const cv::Point point = MapOverlayPoint(
+          landmark.x, landmark.y, source_w, source_h, rgb.cols, rgb.rows);
+      cv::circle(rgb, point, 3, point_color, cv::FILLED, cv::LINE_AA);
+    }
+  }
+}
+
 }  // namespace
 
 struct MosaicFrame {
@@ -461,6 +493,14 @@ void RtspServer::UpdateYoloResult(const vision::YoloResult& result) {
   yolo_results_[result.camera_id] = result;
 }
 
+void RtspServer::UpdateFaceExpressionResult(const vision::FaceExpressionResult& result) {
+  if (result.camera_id.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  face_expression_results_[result.camera_id] = result;
+}
+
 void RtspServer::ClearMediapipeResult(const std::string& camera_id) {
   std::lock_guard<std::mutex> lock(overlay_mu_);
   mediapipe_results_.erase(camera_id);
@@ -469,6 +509,11 @@ void RtspServer::ClearMediapipeResult(const std::string& camera_id) {
 void RtspServer::ClearYoloResult(const std::string& camera_id) {
   std::lock_guard<std::mutex> lock(overlay_mu_);
   yolo_results_.erase(camera_id);
+}
+
+void RtspServer::ClearFaceExpressionResult(const std::string& camera_id) {
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  face_expression_results_.erase(camera_id);
 }
 
 std::optional<vision::MediapipeResult> RtspServer::LatestMediapipeResult(
@@ -491,6 +536,16 @@ std::optional<vision::YoloResult> RtspServer::LatestYoloResult(
   return it->second;
 }
 
+std::optional<vision::FaceExpressionResult> RtspServer::LatestFaceExpressionResult(
+    const std::string& camera_id) const {
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  auto it = face_expression_results_.find(camera_id);
+  if (it == face_expression_results_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
 std::optional<cv::Mat> RtspServer::BuildOverlayNv12(CameraStream* stream, GstSample* sample) const {
   if (stream == nullptr || sample == nullptr) {
     return std::nullopt;
@@ -504,13 +559,17 @@ std::optional<cv::Mat> RtspServer::BuildOverlayNv12(CameraStream* stream, GstSam
 
   const auto mediapipe_result = LatestMediapipeResult(stream->camera_id);
   const auto yolo_result = LatestYoloResult(stream->camera_id);
+  const auto face_expression_result = LatestFaceExpressionResult(stream->camera_id);
   const bool has_mediapipe_overlay =
       mediapipe_result.has_value() && mediapipe_result->ok &&
       !mediapipe_result->hands.empty();
   const bool has_yolo_overlay =
       yolo_result.has_value() && yolo_result->ok &&
       !yolo_result->detections.empty();
-  if (!has_mediapipe_overlay && !has_yolo_overlay) {
+  const bool has_face_expression_overlay =
+      face_expression_result.has_value() && face_expression_result->ok &&
+      !face_expression_result->faces.empty();
+  if (!has_mediapipe_overlay && !has_yolo_overlay && !has_face_expression_overlay) {
     return std::nullopt;
   }
 
@@ -536,6 +595,9 @@ std::optional<cv::Mat> RtspServer::BuildOverlayNv12(CameraStream* stream, GstSam
   }
   if (has_yolo_overlay) {
     DrawYoloOverlay(rgb, *yolo_result);
+  }
+  if (has_face_expression_overlay) {
+    DrawFaceExpressionOverlay(rgb, *face_expression_result);
   }
 
   cv::Mat nv12;

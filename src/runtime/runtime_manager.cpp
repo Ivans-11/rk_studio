@@ -36,6 +36,7 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
   qRegisterMetaType<rkstudio::TelemetryEvent>();
   qRegisterMetaType<rkstudio::vision::MediapipeResult>();
   qRegisterMetaType<rkstudio::vision::YoloResult>();
+  qRegisterMetaType<rkstudio::vision::FaceExpressionResult>();
 
   media_engine_ = new media::MediaEngine(this);
   vision_engine_ = new media::VisionEngine(this);
@@ -69,6 +70,11 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
           this, [this](const vision::YoloResult& result) {
             media_engine_->UpdateYoloResult(result);
             emit YoloResultReady(result);
+          });
+  connect(vision_engine_, &media::VisionEngine::FaceExpressionResultReady,
+          this, [this](const vision::FaceExpressionResult& result) {
+            media_engine_->UpdateFaceExpressionResult(result);
+            emit FaceExpressionResultReady(result);
           });
 
   vision_engine_->SetCallbacks({
@@ -187,8 +193,10 @@ bool RuntimeManager::ToggleResultPublishing(std::string* err) {
     return true;
   }
 
-  if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
-    if (err) *err = "start Mediapipe or YOLO before publishing recognition results";
+  if (!vision_engine_->mediapipe_enabled() &&
+      !vision_engine_->yolo_enabled() &&
+      !vision_engine_->face_expression_enabled()) {
+    if (err) *err = "start Mediapipe, YOLO, or face expression before publishing recognition results";
     return false;
   }
   if (!EnsureZenohStarted(err)) {
@@ -357,7 +365,9 @@ bool RuntimeManager::ToggleMediapipe(bool enable, std::string* err) {
     media_engine_->ClearMediapipeResult(
         media_engine_->session_profile().selected_mediapipe_camera);
   }
-  if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
+  if (!vision_engine_->mediapipe_enabled() &&
+      !vision_engine_->yolo_enabled() &&
+      !vision_engine_->face_expression_enabled()) {
     StopResultPublishing();
   }
   return true;
@@ -376,7 +386,30 @@ bool RuntimeManager::ToggleYolo(bool enable, std::string* err) {
   if (!enable) {
     media_engine_->ClearYoloResult(media_engine_->session_profile().selected_yolo_camera);
   }
-  if (!vision_engine_->mediapipe_enabled() && !vision_engine_->yolo_enabled()) {
+  if (!vision_engine_->mediapipe_enabled() &&
+      !vision_engine_->yolo_enabled() &&
+      !vision_engine_->face_expression_enabled()) {
+    StopResultPublishing();
+  }
+  return true;
+}
+
+bool RuntimeManager::ToggleFaceExpression(bool enable, std::string* err) {
+  if (state_ == AppState::kRecording) {
+    if (err) *err = "cannot change face expression while recording";
+    return false;
+  }
+  vision_engine_->SetState(state_);
+  vision_engine_->SetSessionWriter(nullptr);
+  if (!vision_engine_->ToggleFaceExpression(enable, err)) {
+    return false;
+  }
+  if (!enable) {
+    media_engine_->ClearFaceExpressionResult(media_engine_->session_profile().selected_face_camera);
+  }
+  if (!vision_engine_->mediapipe_enabled() &&
+      !vision_engine_->yolo_enabled() &&
+      !vision_engine_->face_expression_enabled()) {
     StopResultPublishing();
   }
   return true;
@@ -388,6 +421,10 @@ bool RuntimeManager::mediapipe_enabled() const {
 
 bool RuntimeManager::yolo_enabled() const {
   return vision_engine_->yolo_enabled();
+}
+
+bool RuntimeManager::face_expression_enabled() const {
+  return vision_engine_->face_expression_enabled();
 }
 
 bool RuntimeManager::zenoh_enabled() const {
