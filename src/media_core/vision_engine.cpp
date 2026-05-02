@@ -779,17 +779,17 @@ void VisionEngine::OnFaceExpressionSample(GstSample* sample) {
     std::lock_guard<std::mutex> lock(face_expression_frame_mu_);
     camera_id = face_expression_camera_id_;
   }
-  auto raw_frame = frame_converter_.ExtractNv12Frame(sample, camera_id);
-  if (!raw_frame.has_value()) {
+  auto rgb_frame = frame_converter_.ConvertToRgbFrame(sample, camera_id);
+  if (!rgb_frame.has_value()) {
     return;
   }
 
   if (!face_expression_logged_path_) {
-    std::cerr << "[face] input path: NV12 dmabuf\n";
+    std::cerr << "[face] NV12->RGB path: RGA hardware\n";
     face_expression_logged_path_ = true;
   }
 
-  face_expression_processor_->Submit(*raw_frame);
+  face_expression_processor_->Submit(*rgb_frame);
 }
 
 void VisionEngine::PollFaceExpressionResults() {
