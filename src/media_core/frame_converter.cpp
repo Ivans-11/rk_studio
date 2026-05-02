@@ -1,5 +1,6 @@
 #include "rk_studio/media_core/frame_converter.h"
 
+#include <cstring>
 #include <memory>
 #include <utility>
 
@@ -8,6 +9,7 @@
 #include <gst/video/video.h>
 #include <linux/videodev2.h>
 #include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "mediapipe/preprocess/hw_preprocess.h"
 
@@ -80,10 +82,41 @@ std::optional<vision::FrameRef> FrameConverter::ExtractNv12Frame(
   frame.pixel_format = vision::PixelFormat::kNv12;
   frame.bytes_used = gst_buffer_get_size(buffer);
   frame.dmabuf_fd = ExtractDmabufFd(buffer);
-  if (frame.dmabuf_fd < 0) {
+  if (frame.dmabuf_fd >= 0) {
+    frame.owned_data = HoldSampleRef(sample);
+    return frame;
+  }
+
+  GstVideoFrame video_frame;
+  if (!gst_video_frame_map(&video_frame, &info, buffer, GST_MAP_READ)) {
     return std::nullopt;
   }
-  frame.owned_data = HoldSampleRef(sample);
+
+  auto nv12_holder = std::make_shared<cv::Mat>(h * 3 / 2, w, CV_8UC1);
+  const auto* src_y = static_cast<const uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&video_frame, 0));
+  const auto* src_uv = static_cast<const uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&video_frame, 1));
+  const int src_y_stride = GST_VIDEO_FRAME_PLANE_STRIDE(&video_frame, 0);
+  const int src_uv_stride = GST_VIDEO_FRAME_PLANE_STRIDE(&video_frame, 1);
+  if (src_y == nullptr || src_uv == nullptr || src_y_stride <= 0 || src_uv_stride <= 0) {
+    gst_video_frame_unmap(&video_frame);
+    return std::nullopt;
+  }
+  for (int y = 0; y < h; ++y) {
+    std::memcpy(nv12_holder->ptr<uint8_t>(y),
+                src_y + static_cast<size_t>(y) * src_y_stride,
+                w);
+  }
+  for (int y = 0; y < h / 2; ++y) {
+    std::memcpy(nv12_holder->ptr<uint8_t>(h + y),
+                src_uv + static_cast<size_t>(y) * src_uv_stride,
+                w);
+  }
+  gst_video_frame_unmap(&video_frame);
+
+  frame.stride = static_cast<int>(nv12_holder->step[0]);
+  frame.mapped_ptr = nv12_holder->data;
+  frame.bytes_used = nv12_holder->total() * nv12_holder->elemSize();
+  frame.owned_data = nv12_holder;
   return frame;
 }
 
@@ -116,7 +149,34 @@ std::optional<vision::FrameRef> FrameConverter::ConvertToRgbFrame(
   if (GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_NV12 ||
       fd < 0 ||
       !mediapipe_demo::ConvertNv12ToRgb(fd, w, h, stride, &rgb)) {
-    return std::nullopt;
+    GstVideoFrame video_frame;
+    if (GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_NV12 ||
+        !gst_video_frame_map(&video_frame, &info, buffer, GST_MAP_READ)) {
+      return std::nullopt;
+    }
+
+    const auto* src_y = static_cast<const uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&video_frame, 0));
+    const auto* src_uv = static_cast<const uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&video_frame, 1));
+    const int src_y_stride = GST_VIDEO_FRAME_PLANE_STRIDE(&video_frame, 0);
+    const int src_uv_stride = GST_VIDEO_FRAME_PLANE_STRIDE(&video_frame, 1);
+    if (src_y == nullptr || src_uv == nullptr || src_y_stride <= 0 || src_uv_stride <= 0) {
+      gst_video_frame_unmap(&video_frame);
+      return std::nullopt;
+    }
+
+    cv::Mat nv12(h * 3 / 2, w, CV_8UC1);
+    for (int y = 0; y < h; ++y) {
+      std::memcpy(nv12.ptr<uint8_t>(y),
+                  src_y + static_cast<size_t>(y) * src_y_stride,
+                  w);
+    }
+    for (int y = 0; y < h / 2; ++y) {
+      std::memcpy(nv12.ptr<uint8_t>(h + y),
+                  src_uv + static_cast<size_t>(y) * src_uv_stride,
+                  w);
+    }
+    gst_video_frame_unmap(&video_frame);
+    cv::cvtColor(nv12, rgb, cv::COLOR_YUV2RGB_NV12);
   }
 
   if (rgb.empty()) {

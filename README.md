@@ -122,9 +122,19 @@ max_detections = 50
 
 [camera.cam0]
 record_device = "/dev/video55"
+orientation = "normal"
 preview_width = 640
 preview_height = 360
 fps = 30
+```
+
+`orientation` 用于按摄像头修正装配方向，预览、RTSP 和图像识别共用同一配置。可选值：
+
+```text
+normal           # 不变
+rotate-180       # 上下倒置时使用
+horizontal-flip  # 水平镜像
+vertical-flip    # 垂直镜像
 ```
 
 RTSP mount 规则：

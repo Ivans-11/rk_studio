@@ -113,8 +113,9 @@ bool ParseCamera(const std::string& camera_id,
                  CameraNodeSet* camera,
                  std::string* err) {
   static const std::unordered_set<std::string> kAllowed{
-      "record_device", "input_format", "io_mode", "record_width",
-      "record_height", "preview_width", "preview_height", "fps", "bitrate"};
+      "record_device", "input_format", "io_mode", "orientation",
+      "record_width", "record_height", "preview_width",
+      "preview_height", "fps", "bitrate"};
   if (!RejectUnknownKeys(table, kAllowed, "camera." + camera_id, err)) {
     return false;
   }
@@ -123,6 +124,7 @@ bool ParseCamera(const std::string& camera_id,
   if (!AssignValue(table, "record_device", &camera->record_device, "camera." + camera_id, err) ||
       !AssignValue(table, "input_format", &camera->input_format, "camera." + camera_id, err) ||
       !AssignValue(table, "io_mode", &camera->io_mode, "camera." + camera_id, err) ||
+      !AssignValue(table, "orientation", &camera->orientation, "camera." + camera_id, err) ||
       !AssignValue(table, "record_width", &camera->record_width, "camera." + camera_id, err) ||
       !AssignValue(table, "record_height", &camera->record_height, "camera." + camera_id, err) ||
       !AssignValue(table, "preview_width", &camera->preview_width, "camera." + camera_id, err) ||
@@ -167,6 +169,15 @@ bool ValidateBoardConfig(const BoardConfig& config, std::string* err) {
         camera.preview_height <= 0 || camera.fps <= 0 || camera.bitrate <= 0) {
       if (err) {
         *err = "camera '" + camera.id + "' dimensions/fps/bitrate must be > 0";
+      }
+      return false;
+    }
+    static const std::unordered_set<std::string> kOrientations{
+        "normal", "rotate-180", "horizontal-flip", "vertical-flip"};
+    if (kOrientations.find(camera.orientation) == kOrientations.end()) {
+      if (err) {
+        *err = "camera '" + camera.id +
+               "' orientation must be one of: normal, rotate-180, horizontal-flip, vertical-flip";
       }
       return false;
     }

@@ -20,6 +20,7 @@ struct CameraNodeSet {
   std::string record_device;
   std::string input_format = "NV12";
   std::string io_mode = "dmabuf";
+  std::string orientation = "normal";
   int record_width = 1920;
   int record_height = 1080;
   int preview_width = 640;

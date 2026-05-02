@@ -416,6 +416,7 @@ std::unique_ptr<V4l2Pipeline> VisionEngine::BuildVisionPipeline(
   options.source.device = selfpath_device;
   options.source.input_format = camera->input_format;
   options.source.io_mode = camera->io_mode;
+  options.source.orientation = camera->orientation;
   options.source.width = camera->preview_width;
   options.source.height = camera->preview_height;
   options.source.fps = fps;

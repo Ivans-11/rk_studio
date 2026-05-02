@@ -221,6 +221,7 @@ std::unique_ptr<V4l2Pipeline> MediaEngine::BuildOnePipeline(
   options.source.device = camera->record_device;
   options.source.input_format = camera->input_format;
   options.source.io_mode = camera->io_mode;
+  options.source.orientation = camera->orientation;
   options.source.width = recording ? camera->record_width : camera->preview_width;
   options.source.height = recording ? camera->record_height : camera->preview_height;
   options.source.fps = camera->fps;

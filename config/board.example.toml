@@ -43,24 +43,28 @@ device = "hw:rockchipes8388,0"
 
 [camera.cam0]
 record_device = "/dev/video55"
+orientation = "normal"
 preview_width = 640
 preview_height = 360
 fps = 30
 
 [camera.cam1]
 record_device = "/dev/video64"
+orientation = "normal"
 preview_width = 640
 preview_height = 360
 fps = 30
 
 [camera.cam2]
 record_device = "/dev/video73"
+orientation = "normal"
 preview_width = 640
 preview_height = 360
 fps = 30
 
 [camera.cam3]
 record_device = "/dev/video82"
+orientation = "normal"
 preview_width = 640
 preview_height = 360
 fps = 30

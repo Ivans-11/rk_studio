@@ -1188,6 +1188,7 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
     options.source.device = cam.record_device;
     options.source.input_format = cam.input_format;
     options.source.io_mode = cam.io_mode;
+    options.source.orientation = cam.orientation;
     options.source.width = width;
     options.source.height = height;
     options.source.fps = cam.fps;
