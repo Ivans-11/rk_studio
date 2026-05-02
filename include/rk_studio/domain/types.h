@@ -61,6 +61,17 @@ struct FaceExpressionHardwareConfig {
   int max_faces = 1;
 };
 
+struct AudioEventHardwareConfig {
+  std::string model;       // resolved at runtime if empty
+  std::string class_map;   // resolved at runtime if empty
+  int fps = 2;
+  int window_ms = 960;
+  int hop_ms = 480;
+  int top_k = 5;
+  double score_threshold = 0.20;
+  double publish_threshold = 0.30;
+};
+
 struct RtspConfig {
   int port = 8554;
   std::string codec = "h265";
@@ -95,6 +106,7 @@ struct BoardConfig {
   std::optional<MediapipeHardwareConfig> mediapipe;
   std::optional<YoloHardwareConfig> yolo;
   std::optional<FaceExpressionHardwareConfig> face_expression;
+  std::optional<AudioEventHardwareConfig> audio_event;
   std::optional<RtspConfig> rtsp;
   std::optional<ZenohConfig> zenoh;
   EntityRegistrationConfig entity_registration;

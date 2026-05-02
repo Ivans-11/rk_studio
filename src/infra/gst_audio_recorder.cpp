@@ -5,6 +5,8 @@
 #include <memory>
 #include <utility>
 
+#include <gst/app/gstappsink.h>
+
 #include "rk_studio/infra/runtime.h"
 
 namespace rkinfra {
@@ -37,11 +39,13 @@ void SetPropertyIfExists(GstElement* element, const char* property, const T& val
 GstAudioRecorder::GstAudioRecorder(AudioConfig config,
                                    uint64_t queue_mux_max_time_ns,
                                    EventCallback on_event,
-                                   const fs::path& session_dir)
+                                   const fs::path& session_dir,
+                                   bool record_to_file)
     : config_(std::move(config)),
       queue_mux_max_time_ns_(queue_mux_max_time_ns),
       on_event_(std::move(on_event)),
-      session_dir_(session_dir) {}
+      session_dir_(session_dir),
+      record_to_file_(record_to_file) {}
 
 GstAudioRecorder::~GstAudioRecorder() { Stop(); }
 
@@ -51,7 +55,7 @@ bool GstAudioRecorder::Build(std::string* err) {
   output_.type = "audio";
   output_.device = config_.device;
   output_.codec = "pcm_s16le";
-  output_.output_path = output_path_.string();
+  output_.output_path = record_to_file_ ? output_path_.string() : std::string();
   if (err) {
     err->clear();
   }
@@ -118,14 +122,26 @@ std::string GstAudioRecorder::failure_reason() const {
 
 const OutputStreamInfo& GstAudioRecorder::stream_output() const { return output_; }
 
+void GstAudioRecorder::SetPcmCallback(PcmCallback callback) {
+  std::lock_guard<std::mutex> lock(state_mu_);
+  pcm_callback_ = std::move(callback);
+}
+
 bool GstAudioRecorder::BuildPipeline(std::string* err) {
   pipeline_ = gst_pipeline_new("rk-recorder-audio");
   source_ = gst_element_factory_make("alsasrc", "audio_src");
   caps_filter_ = gst_element_factory_make("capsfilter", "audio_caps");
-  queue_mux_ = gst_element_factory_make("queue", "audio_queue_mux");
-  wavenc_ = gst_element_factory_make("wavenc", "audio_wavenc");
-  sink_ = gst_element_factory_make("filesink", "audio_sink");
-  if (!pipeline_ || !source_ || !caps_filter_ || !queue_mux_ || !wavenc_ || !sink_) {
+  tee_ = gst_element_factory_make("tee", "audio_tee");
+  if (record_to_file_) {
+    queue_mux_ = gst_element_factory_make("queue", "audio_queue_mux");
+    wavenc_ = gst_element_factory_make("wavenc", "audio_wavenc");
+    sink_ = gst_element_factory_make("filesink", "audio_sink");
+  }
+  queue_app_ = gst_element_factory_make("queue", "audio_queue_app");
+  app_sink_ = gst_element_factory_make("appsink", "audio_app_sink");
+  const bool base_ok = pipeline_ && source_ && caps_filter_ && tee_ && queue_app_ && app_sink_;
+  const bool record_ok = !record_to_file_ || (queue_mux_ && wavenc_ && sink_);
+  if (!base_ok || !record_ok) {
     if (err) {
       *err = "failed to create GStreamer audio elements";
     }
@@ -142,17 +158,32 @@ bool GstAudioRecorder::BuildPipeline(std::string* err) {
   g_object_set(G_OBJECT(caps_filter_), "caps", audio_caps, nullptr);
   gst_caps_unref(audio_caps);
 
-  g_object_set(G_OBJECT(queue_mux_), "leaky", kQueueLeakyDownstream, "max-size-buffers", 0u, "max-size-bytes", 0u,
-               "max-size-time", queue_mux_max_time_ns_, nullptr);
-  SetPropertyIfExists(sink_, "location", output_path_.c_str());
+  if (record_to_file_) {
+    g_object_set(G_OBJECT(queue_mux_), "leaky", kQueueLeakyDownstream, "max-size-buffers", 0u, "max-size-bytes", 0u,
+                 "max-size-time", queue_mux_max_time_ns_, nullptr);
+  }
+  g_object_set(G_OBJECT(queue_app_), "leaky", kQueueLeakyDownstream, "max-size-buffers", 4u, "max-size-bytes", 0u,
+               "max-size-time", 0u, nullptr);
+  g_object_set(G_OBJECT(app_sink_), "emit-signals", TRUE, "max-buffers", 4u, "drop", TRUE, "sync", FALSE, nullptr);
+  if (record_to_file_) {
+    SetPropertyIfExists(sink_, "location", output_path_.c_str());
+  }
 
-  gst_bin_add_many(GST_BIN(pipeline_), source_, caps_filter_, queue_mux_, wavenc_, sink_, nullptr);
-  if (!gst_element_link_many(source_, caps_filter_, queue_mux_, wavenc_, sink_, nullptr)) {
+  gst_bin_add_many(GST_BIN(pipeline_), source_, caps_filter_, tee_, queue_app_, app_sink_, nullptr);
+  if (record_to_file_) {
+    gst_bin_add_many(GST_BIN(pipeline_), queue_mux_, wavenc_, sink_, nullptr);
+  }
+  const bool linked = gst_element_link_many(source_, caps_filter_, tee_, nullptr) &&
+                      gst_element_link_many(tee_, queue_app_, app_sink_, nullptr) &&
+                      (!record_to_file_ ||
+                       gst_element_link_many(tee_, queue_mux_, wavenc_, sink_, nullptr));
+  if (!linked) {
     if (err) {
       *err = "failed to link GStreamer audio pipeline";
     }
     return false;
   }
+  g_signal_connect(app_sink_, "new-sample", G_CALLBACK(&GstAudioRecorder::OnNewSample), this);
 
   InstallProbes();
   InstallQueueSignals();
@@ -195,7 +226,10 @@ void GstAudioRecorder::CleanupPipeline() {
   pipeline_ = nullptr;
   source_ = nullptr;
   caps_filter_ = nullptr;
+  tee_ = nullptr;
   queue_mux_ = nullptr;
+  queue_app_ = nullptr;
+  app_sink_ = nullptr;
   wavenc_ = nullptr;
   sink_ = nullptr;
   base_time_ns_.store(GST_CLOCK_TIME_NONE);
@@ -204,6 +238,9 @@ void GstAudioRecorder::CleanupPipeline() {
 }
 
 void GstAudioRecorder::InstallProbes() {
+  if (!record_to_file_ || queue_mux_ == nullptr) {
+    return;
+  }
   using GstPadPtr = std::unique_ptr<GstPad, GstUnrefDeleter<GstPad>>;
 
   GstPadPtr pad(gst_element_get_static_pad(queue_mux_, "src"));
@@ -220,6 +257,9 @@ void GstAudioRecorder::InstallProbes() {
 }
 
 void GstAudioRecorder::InstallQueueSignals() {
+  if (!record_to_file_ || queue_mux_ == nullptr) {
+    return;
+  }
   auto ctx = std::make_unique<QueueSignalContext>();
   ctx->self = this;
   ctx->stream_id = config_.id;
@@ -354,6 +394,40 @@ GstPadProbeReturn GstAudioRecorder::OnBufferProbe(GstPad*, GstPadProbeInfo* info
 
   ctx->self->PushEvent(std::move(event));
   return GST_PAD_PROBE_OK;
+}
+
+GstFlowReturn GstAudioRecorder::OnNewSample(GstElement* sink, gpointer user_data) {
+  auto* self = static_cast<GstAudioRecorder*>(user_data);
+  if (self == nullptr || sink == nullptr) {
+    return GST_FLOW_OK;
+  }
+
+  GstSample* sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
+  if (sample == nullptr) {
+    return GST_FLOW_OK;
+  }
+
+  GstBuffer* buffer = gst_sample_get_buffer(sample);
+  GstMapInfo map;
+  if (buffer != nullptr && gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+    PcmCallback callback;
+    {
+      std::lock_guard<std::mutex> lock(self->state_mu_);
+      callback = self->pcm_callback_;
+    }
+    if (callback && map.data != nullptr && map.size >= sizeof(int16_t)) {
+      const GstClockTime pts = GST_BUFFER_PTS(buffer);
+      callback(self->config_.id,
+               pts,
+               self->config_.rate,
+               self->config_.channels,
+               reinterpret_cast<const int16_t*>(map.data),
+               map.size / sizeof(int16_t));
+    }
+    gst_buffer_unmap(buffer, &map);
+  }
+  gst_sample_unref(sample);
+  return GST_FLOW_OK;
 }
 
 void GstAudioRecorder::OnQueueOverrun(GstElement*, gpointer user_data) {

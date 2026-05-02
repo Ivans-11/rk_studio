@@ -9,6 +9,7 @@
 
 #include "rk_studio/domain/types.h"
 #include "rk_studio/infra/zenoh_publisher.h"
+#include "rk_studio/media_core/audio_engine.h"
 #include "rk_studio/media_core/media_engine.h"
 #include "rk_studio/media_core/vision_engine.h"
 
@@ -39,10 +40,12 @@ class RuntimeManager : public QObject {
   bool ToggleMediapipe(bool enable, std::string* err);
   bool ToggleYolo(bool enable, std::string* err);
   bool ToggleFaceExpression(bool enable, std::string* err);
+  bool ToggleAudioEvent(bool enable, std::string* err);
 
   bool mediapipe_enabled() const;
   bool yolo_enabled() const;
   bool face_expression_enabled() const;
+  bool audio_event_enabled() const;
   bool zenoh_enabled() const;
   bool result_publishing_enabled() const;
   bool entity_registered() const;
@@ -58,6 +61,7 @@ class RuntimeManager : public QObject {
   void MediapipeResultReady(rkstudio::vision::MediapipeResult result);
   void YoloResultReady(rkstudio::vision::YoloResult result);
   void FaceExpressionResultReady(rkstudio::vision::FaceExpressionResult result);
+  void AudioEventResultReady(rkstudio::vision::AudioEventResult result);
 
  private:
   void SetState(AppState state);
@@ -72,6 +76,7 @@ class RuntimeManager : public QObject {
 
   media::MediaEngine* media_engine_ = nullptr;
   media::VisionEngine* vision_engine_ = nullptr;
+  media::AudioEngine* audio_engine_ = nullptr;
   rkinfra::ZenohPublisher zenoh_publisher_;
   QTimer* entity_registration_timer_ = nullptr;
   bool entity_registered_ = false;

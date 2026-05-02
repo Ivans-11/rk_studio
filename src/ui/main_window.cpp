@@ -67,6 +67,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(runtime_manager_, &runtime::RuntimeManager::YoloResultReady, this, &MainWindow::OnYoloResult);
   connect(runtime_manager_, &runtime::RuntimeManager::FaceExpressionResultReady,
           this, &MainWindow::OnFaceExpressionResult);
+  connect(runtime_manager_, &runtime::RuntimeManager::AudioEventResultReady,
+          this, &MainWindow::OnAudioEventResult);
 
   if (QFileInfo::exists(board_config_path_) && QFileInfo::exists(profile_path_)) {
     LoadConfigFiles();
@@ -102,6 +104,7 @@ void MainWindow::BuildUi() {
   mediapipe_toggle_button_ = new QPushButton(QStringLiteral("启动 Mediapipe"), side_panel);
   yolo_toggle_button_ = new QPushButton(QStringLiteral("启动 YOLO"), side_panel);
   face_expression_toggle_button_ = new QPushButton(QStringLiteral("启动面部表情"), side_panel);
+  audio_event_toggle_button_ = new QPushButton(QStringLiteral("启动音频识别"), side_panel);
   record_button_->setEnabled(false);
   rtsp_button_->setEnabled(false);
   entity_registry_button_->setEnabled(false);
@@ -109,10 +112,14 @@ void MainWindow::BuildUi() {
   mediapipe_toggle_button_->setEnabled(false);
   yolo_toggle_button_->setEnabled(false);
   face_expression_toggle_button_->setEnabled(false);
+  audio_event_toggle_button_->setEnabled(false);
 
   state_label_ = new QLabel(QStringLiteral("状态: Idle"), side_panel);
   summary_label_ = new QLabel(QStringLiteral("等待配置"), side_panel);
   summary_label_->setWordWrap(true);
+  audio_event_label_ = new QLabel(QStringLiteral("当前声音:\n--"), side_panel);
+  audio_event_label_->setWordWrap(true);
+  audio_event_label_->setStyleSheet("color: #d8d8d8;");
   log_view_ = new QPlainTextEdit(side_panel);
   log_view_->setReadOnly(true);
   log_view_->setMaximumBlockCount(1000);
@@ -126,8 +133,10 @@ void MainWindow::BuildUi() {
   side_layout->addWidget(mediapipe_toggle_button_);
   side_layout->addWidget(yolo_toggle_button_);
   side_layout->addWidget(face_expression_toggle_button_);
+  side_layout->addWidget(audio_event_toggle_button_);
   side_layout->addWidget(state_label_);
   side_layout->addWidget(summary_label_);
+  side_layout->addWidget(audio_event_label_);
   side_layout->addWidget(log_view_, 1);
 
   grid_container_ = new QWidget(central_);
@@ -143,6 +152,7 @@ void MainWindow::BuildUi() {
   connect(mediapipe_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleMediapipe);
   connect(yolo_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleYolo);
   connect(face_expression_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleFaceExpression);
+  connect(audio_event_toggle_button_, &QPushButton::clicked, this, &MainWindow::ToggleAudioEvent);
 }
 
 void MainWindow::RebuildTiles() {
@@ -282,6 +292,7 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
     bool mediapipe_enabled;
     bool yolo_enabled;
     bool face_expression_enabled;
+    bool audio_event_enabled;
   };
 
   static const auto kTable = [] {
@@ -291,6 +302,7 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         QStringLiteral("启动预览"), true,
         QStringLiteral("启动录制"), true,
         QStringLiteral("启动 RTSP"), true,
+        true,
         true,
         true,
         true,
@@ -305,12 +317,14 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         true,
         true,
         true,
+        true,
         true};
     t[rkstudio::AppState::kRecording] = {
         "Recording",
         {}, false,
         QStringLiteral("停止录制"), true,
         {}, false,
+        false,
         false,
         false,
         false,
@@ -325,12 +339,14 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
         true,
         true,
         true,
+        true,
         true};
     t[rkstudio::AppState::kError] = {
         "Error",
         QStringLiteral("启动预览"), true,
         QStringLiteral("启动录制"), false,
         QStringLiteral("启动 RTSP"), false,
+        false,
         false,
         false,
         false,
@@ -363,7 +379,8 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
       (runtime_manager_->result_publishing_enabled() ||
        runtime_manager_->mediapipe_enabled() ||
        runtime_manager_->yolo_enabled() ||
-       runtime_manager_->face_expression_enabled()));
+       runtime_manager_->face_expression_enabled() ||
+       runtime_manager_->audio_event_enabled()));
   mediapipe_toggle_button_->setText(runtime_manager_->mediapipe_enabled() ? QStringLiteral("关闭 Mediapipe")
                                                                        : QStringLiteral("启动 Mediapipe"));
   yolo_toggle_button_->setText(runtime_manager_->yolo_enabled() ? QStringLiteral("关闭 YOLO")
@@ -371,9 +388,15 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
   face_expression_toggle_button_->setText(runtime_manager_->face_expression_enabled()
                                               ? QStringLiteral("关闭面部表情")
                                               : QStringLiteral("启动面部表情"));
+  audio_event_toggle_button_->setText(runtime_manager_->audio_event_enabled()
+                                          ? QStringLiteral("关闭音频识别")
+                                          : QStringLiteral("启动音频识别"));
   mediapipe_toggle_button_->setEnabled(row.mediapipe_enabled);
   yolo_toggle_button_->setEnabled(row.yolo_enabled);
   face_expression_toggle_button_->setEnabled(row.face_expression_enabled);
+  audio_event_toggle_button_->setEnabled(row.audio_event_enabled &&
+                                        runtime_manager_->board_config().audio_event.has_value() &&
+                                        !runtime_manager_->session_profile().audio_source.empty());
   state_label_->setText(QString("状态: %1").arg(row.label));
 }
 
@@ -513,6 +536,53 @@ void MainWindow::OnFaceExpressionResult(rkstudio::vision::FaceExpressionResult r
                   .arg(QString::fromStdString(result.camera_id))
                   .arg(QString::fromStdString(result.error)));
   }
+}
+
+void MainWindow::ToggleAudioEvent() {
+  const bool enabling = !runtime_manager_->audio_event_enabled();
+  audio_event_toggle_button_->setText(enabling ? QStringLiteral("关闭音频识别")
+                                               : QStringLiteral("启动音频识别"));
+
+  std::string err;
+  if (!runtime_manager_->ToggleAudioEvent(enabling, &err)) {
+    QMessageBox::warning(this, QStringLiteral("音频识别切换失败"), QString::fromStdString(err));
+    audio_event_toggle_button_->setText(runtime_manager_->audio_event_enabled()
+                                            ? QStringLiteral("关闭音频识别")
+                                            : QStringLiteral("启动音频识别"));
+    return;
+  }
+  if (!enabling && audio_event_label_ != nullptr) {
+    audio_event_label_->setText(QStringLiteral("当前声音:\n--"));
+  }
+  OnStateChanged(runtime_manager_->state());
+}
+
+void MainWindow::OnAudioEventResult(rkstudio::vision::AudioEventResult result) {
+  if (audio_event_label_ == nullptr) {
+    return;
+  }
+  if (!result.ok) {
+    AppendLog(QString("[audio] %1 error: %2")
+                  .arg(QString::fromStdString(result.source_id))
+                  .arg(QString::fromStdString(result.error)));
+    return;
+  }
+
+  QString text = QStringLiteral("当前声音:\n");
+  if (result.events.empty()) {
+    text += QStringLiteral("--");
+  } else {
+    const int count = std::min<int>(3, static_cast<int>(result.events.size()));
+    for (int i = 0; i < count; ++i) {
+      const auto& event = result.events[static_cast<size_t>(i)];
+      text += QString("%1  %2").arg(QString::fromStdString(event.label))
+                               .arg(event.score, 0, 'f', 2);
+      if (i + 1 < count) {
+        text += '\n';
+      }
+    }
+  }
+  audio_event_label_->setText(text);
 }
 
 }  // namespace rkstudio::ui

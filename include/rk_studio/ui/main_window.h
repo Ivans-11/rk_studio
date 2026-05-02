@@ -30,6 +30,7 @@ class MainWindow : public QMainWindow {
   void ToggleMediapipe();
   void ToggleYolo();
   void ToggleFaceExpression();
+  void ToggleAudioEvent();
   void OnStateChanged(rkstudio::AppState state);
   void OnTelemetryObserved(rkstudio::TelemetryEvent event);
   void OnPreviewFailure(QString camera_id, QString reason, bool fatal);
@@ -38,6 +39,7 @@ class MainWindow : public QMainWindow {
   void OnMediapipeResult(rkstudio::vision::MediapipeResult result);
   void OnYoloResult(rkstudio::vision::YoloResult result);
   void OnFaceExpressionResult(rkstudio::vision::FaceExpressionResult result);
+  void OnAudioEventResult(rkstudio::vision::AudioEventResult result);
 
  private:
   void BuildUi();
@@ -61,6 +63,8 @@ class MainWindow : public QMainWindow {
   QPushButton* mediapipe_toggle_button_ = nullptr;
   QPushButton* yolo_toggle_button_ = nullptr;
   QPushButton* face_expression_toggle_button_ = nullptr;
+  QPushButton* audio_event_toggle_button_ = nullptr;
+  QLabel* audio_event_label_ = nullptr;
   QPlainTextEdit* log_view_ = nullptr;
   std::map<QString, PreviewTileWidget*> tiles_;
   int telemetry_ok_skip_counter_ = 0;

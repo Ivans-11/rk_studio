@@ -96,6 +96,7 @@ bool MediaEngine::StartPreview(std::string* err) {
 }
 
 bool MediaEngine::StartRecording(std::string* err) {
+  StopAudioMonitor();
   StopPipelines();
 
   session_writer_ = std::make_unique<SessionWriter>();
@@ -130,8 +131,21 @@ bool MediaEngine::StartRtsp(std::string* err) {
   return true;
 }
 
+bool MediaEngine::StartAudioMonitor(std::string* err) {
+  StopAudioRecorder();
+  StopAudioMonitor();
+  return BuildAudioRecorder(false, err);
+}
+
 void MediaEngine::StopPreview() {
   StopPipelines();
+}
+
+void MediaEngine::StopAudioMonitor() {
+  if (!audio_monitor_) return;
+  audio_monitor_->RequestStop();
+  audio_monitor_->Stop();
+  audio_monitor_.reset();
 }
 
 void MediaEngine::StopRecording(bool ok) {
@@ -150,6 +164,7 @@ void MediaEngine::StopAll() {
   if (session_writer_) {
     FinalizeRecording(true);
   }
+  StopAudioMonitor();
   StopPipelines();
 }
 
@@ -171,6 +186,12 @@ void MediaEngine::UpdateFaceExpressionResult(const vision::FaceExpressionResult&
   }
 }
 
+void MediaEngine::UpdateAudioEventResult(const vision::AudioEventResult& result) {
+  if (rtsp_server_) {
+    rtsp_server_->UpdateAudioEventResult(result);
+  }
+}
+
 void MediaEngine::ClearMediapipeResult(const std::string& camera_id) {
   if (rtsp_server_) {
     rtsp_server_->ClearMediapipeResult(camera_id);
@@ -189,6 +210,12 @@ void MediaEngine::ClearFaceExpressionResult(const std::string& camera_id) {
   }
 }
 
+void MediaEngine::ClearAudioEventResult() {
+  if (rtsp_server_) {
+    rtsp_server_->ClearAudioEventResult();
+  }
+}
+
 void MediaEngine::BindPreviewWindow(const std::string& camera_id, WId window_id) {
   preview_window_ids_[camera_id] = window_id;
   auto it = cameras_.find(camera_id);
@@ -199,6 +226,16 @@ void MediaEngine::BindPreviewWindow(const std::string& camera_id, WId window_id)
 
 void MediaEngine::BindPreviewFrameTarget(const std::string& camera_id, bool enabled) {
   preview_frame_targets_[camera_id] = enabled;
+}
+
+void MediaEngine::SetAudioPcmCallback(rkinfra::GstAudioRecorder::PcmCallback callback) {
+  audio_pcm_callback_ = std::move(callback);
+  if (audio_recorder_) {
+    audio_recorder_->SetPcmCallback(audio_pcm_callback_);
+  }
+  if (audio_monitor_) {
+    audio_monitor_->SetPcmCallback(audio_pcm_callback_);
+  }
 }
 
 void MediaEngine::ObserveTelemetry(const TelemetryEvent& event) {
@@ -348,24 +385,56 @@ void MediaEngine::FinalizeRecording(bool ok) {
   }
 }
 
-bool MediaEngine::StartAudioRecorder(std::string* err) {
+bool MediaEngine::BuildAudioRecorder(bool record_to_file, std::string* err) {
   const auto* config = session_writer_ ? session_writer_->recording_config() : nullptr;
-  if (!config || !config->audio.has_value() || !session_writer_->session_paths()) {
-    audio_recorder_.reset();
-    return true;
+  const AudioSource* source = nullptr;
+  if (record_to_file) {
+    if (!config || !config->audio.has_value() || !session_writer_ || !session_writer_->session_paths()) {
+      audio_recorder_.reset();
+      return true;
+    }
+  } else {
+    if (session_profile_.audio_source.empty()) {
+      if (err) *err = "no audio source configured";
+      return false;
+    }
+    source = FindAudioSource(board_config_, session_profile_.audio_source);
+    if (source == nullptr) {
+      if (err) *err = "unknown audio source: " + session_profile_.audio_source;
+      return false;
+    }
   }
 
-  audio_recorder_ = std::make_unique<rkinfra::GstAudioRecorder>(
-      *config->audio, config->queue.audio_mux_max_time_ns,
-      [this](rkinfra::StreamEvent event) {
+  auto recorder = std::make_unique<rkinfra::GstAudioRecorder>(
+      record_to_file ? *config->audio : rkinfra::AudioConfig{
+          source->id, source->device, source->rate, source->channels},
+      record_to_file ? config->queue.audio_mux_max_time_ns : rkinfra::kDefaultMuxQueueTimeNs,
+      [this, record_to_file](rkinfra::StreamEvent event) {
         event.category = "audio";
-        EmitTelemetry(FromInfraStreamEvent(event));
+        if (record_to_file) {
+          EmitTelemetry(FromInfraStreamEvent(event));
+        }
       },
-      session_writer_->session_paths()->session_dir);
+      record_to_file ? session_writer_->session_paths()->session_dir : std::filesystem::temp_directory_path(),
+      record_to_file);
+  recorder->SetPcmCallback(audio_pcm_callback_);
 
   std::string audio_err;
-  if (!audio_recorder_->Build(&audio_err) || !audio_recorder_->Start(&audio_err)) {
+  if (!recorder->Build(&audio_err) || !recorder->Start(&audio_err)) {
     if (err) *err = audio_err;
+    return false;
+  }
+
+  if (record_to_file) {
+    audio_recorder_ = std::move(recorder);
+  } else {
+    audio_monitor_ = std::move(recorder);
+  }
+  return true;
+}
+
+bool MediaEngine::StartAudioRecorder(std::string* err) {
+  if (!BuildAudioRecorder(true, err)) {
     audio_recorder_.reset();
     return false;
   }

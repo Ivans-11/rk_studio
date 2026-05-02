@@ -1,6 +1,6 @@
 # rk_studio
 
-RK3588 上的 4 路摄像头预览、录制、RTSP 推流、Mediapipe 手部关键点、YOLO 目标检测和 Zenoh 结果发布应用。项目面向 LubanCat-5 V2 + IMX415，使用 Qt5、GStreamer、RKNN 和 RGA。
+RK3588 上的 4 路摄像头预览、录制、RTSP 推流、Mediapipe 手部关键点、YOLO 目标检测、面部表情识别、音频事件识别和 Zenoh 结果发布应用。项目面向 LubanCat-5 V2 + IMX415，使用 Qt5、GStreamer、RKNN 和 RGA。
 
 ## 快速部署
 
@@ -120,6 +120,16 @@ confidence_threshold = 0.25
 nms_threshold = 0.45
 max_detections = 50
 
+[audio_event]
+model = "../models/yamnet.onnx"
+class_map = "../models/yamnet_class_map.csv"
+fps = 2
+window_ms = 960
+hop_ms = 480
+top_k = 5
+score_threshold = 0.20
+publish_threshold = 0.30
+
 [camera.cam0]
 record_device = "/dev/video55"
 orientation = "normal"
@@ -154,6 +164,8 @@ Zenoh 发布模型结果：
 ```text
 halmet/mediapipe
 rk_studio/yolo/<camera_id>/objects
+rk_studio/face/<camera_id>/expression
+rk_studio/audio/<source_id>/events
 ```
 
 Mediapipe 手部结果只发布精简的 hand 对象，当前规则手势为 `fist` 和 `open_palm`。
@@ -177,21 +189,24 @@ prefix = "rk_studio"
 audio_source = ""
 selected_mediapipe_camera = "cam0"
 selected_yolo_camera = "cam1"
+selected_face_camera = "cam2"
 ```
 
-Mediapipe 和 YOLO 可以选择不同摄像头。两者不能使用同一个识别摄像头。
+Mediapipe、YOLO 和面部表情识别可以选择不同摄像头，不能使用同一个识别摄像头。音频事件识别复用 `audio_source`。
 
 ## 使用规则
 
 - `启动预览`：显示 4 路预览画面。
 - `启动 Mediapipe`：开启手部关键点推理；如果预览已开启，在对应画面叠加结果。
 - `启动 YOLO`：开启目标检测；如果预览已开启，在对应画面叠加检测框。
+- `启动面部表情`：开启人脸检测和表情分类；如果预览已开启，在对应画面叠加人脸框和表情标签。
+- `启动音频识别`：开启音频事件识别；界面侧边栏显示当前声音类型，RTSP 画面叠加最近声音类型文字。
 - `注册实体` / `注销实体`：按 `[zenoh]` 配置建立连接，向 `zho/entity/registry` 发布当前设备的 `ObjectRegistration` 注册或注销信息；注册后每 5 秒重复发送一次 `REG_REGISTER` 作为心跳。
-- `发送识别结果` / `停止识别结果`：至少开启一个 Mediapipe/YOLO 后才能启动，向 Zenoh 发布当前模型结果。
-- `启动录制`：录制前可以先开启 Mediapipe/YOLO、注册实体或发送识别结果；录制开始后功能组合冻结，只允许停止录制。
+- `发送识别结果` / `停止识别结果`：至少开启一个识别模块后才能启动，向 Zenoh 发布当前模型结果。
+- `启动录制`：录制前可以先开启识别模块、注册实体或发送识别结果；录制开始后功能组合冻结，只允许停止录制。
 - `启动 RTSP`：按 `board.toml` 的 `[rtsp].mounts` 注册推流地址。
 
-预览、录制、RTSP 三种模式互斥，它们占用 mainpath。Mediapipe/YOLO 是独立 selfpath 推理链路，不要求先开启预览，可以和 RTSP 同时运行。实体注册只依赖 `[zenoh]` 配置；发送识别结果受模型开关约束。YOLO 只显示、记录和发布置信度大于 0.7 的目标。
+预览、录制、RTSP 三种模式互斥，它们占用 mainpath。Mediapipe/YOLO/面部表情是独立 selfpath 推理链路，不要求先开启预览，可以和 RTSP 同时运行。音频识别通过 ALSA appsink 分支实时取样，录制时同时保持 WAV 写入。实体注册只依赖 `[zenoh]` 配置；发送识别结果受模型开关约束。YOLO 只显示、记录和发布置信度大于 0.7 的目标。
 
 ## 输出
 
@@ -206,10 +221,12 @@ records/rk_studio-YYYYMMDD-HHMMSS/
 ├── session.sync.json
 ├── studio.events.jsonl
 ├── mediapipe.hand.jsonl
-└── yolo.objects.jsonl
+├── yolo.objects.jsonl
+├── face.expression.jsonl
+└── audio.events.jsonl
 ```
 
-模型结果 jsonl 只保留核心字段；需要更多字段时再扩展。
+模型结果 jsonl 只保留核心字段；需要更多字段时再扩展。当前音频事件识别已打通实时展示、记录、RTSP 叠加和 Zenoh 发布链路；YAMNet ONNX Runtime 后端仍需在板端补齐依赖后替换当前规则占位后端。
 
 ## 上板测试清单
 
@@ -219,10 +236,12 @@ records/rk_studio-YYYYMMDD-HHMMSS/
 2. 只开预览：4 路画面正常，帧率限制生效。
 3. 只开 Mediapipe：不开预览也能产生日志；开预览后只叠加关键点，不影响底层预览画面。
 4. 只开 YOLO：确认使用当前模型和 COCO 类别名。
-5. 同时开 Mediapipe + YOLO：两个摄像头分别叠加，UI 不闪烁、不抢画面。
-6. 开 Zenoh：测试面板能收到 `zho/entity/registry` 和 `halmet/mediapipe`。
-7. 开 RTSP + 模型 + Zenoh：RTSP 画面和 Zenoh 模型结果同时正常。
-8. 先开模型和 Zenoh，再开始录制：录制期间按钮状态冻结，停止后生成 jsonl。
+5. 只开面部表情：预览叠加人脸框和表情标签。
+6. 只开音频识别：侧边栏显示当前声音类型，RTSP 叠加音频文字。
+7. 同时开 Mediapipe + YOLO + 面部表情 + 音频识别：不同摄像头分别叠加，UI 不闪烁、不抢画面。
+8. 开 Zenoh：测试面板能收到 `zho/entity/registry`、`halmet/mediapipe` 和 `rk_studio/audio/<source_id>/events`。
+9. 开 RTSP + 模型 + Zenoh：RTSP 画面和 Zenoh 模型结果同时正常。
+10. 先开模型和 Zenoh，再开始录制：录制期间按钮状态冻结，停止后生成 jsonl。
 
 ## 目录
 

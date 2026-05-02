@@ -360,6 +360,47 @@ void DrawFaceExpressionOverlay(cv::Mat& rgb, const vision::FaceExpressionResult&
   }
 }
 
+void DrawAudioEventOverlay(cv::Mat& rgb, const vision::AudioEventResult& result) {
+  if (!result.ok || result.events.empty() || rgb.empty()) {
+    return;
+  }
+
+  std::ostringstream label;
+  label << "Audio: ";
+  const size_t count = std::min<size_t>(3, result.events.size());
+  for (size_t i = 0; i < count; ++i) {
+    if (i > 0) {
+      label << " | ";
+    }
+    label.setf(std::ios::fixed);
+    label.precision(2);
+    label << result.events[i].label << " " << result.events[i].score;
+  }
+
+  const double font_scale = 0.5;
+  const int thickness = 1;
+  int baseline = 0;
+  const cv::Size text_size =
+      cv::getTextSize(label.str(), cv::FONT_HERSHEY_SIMPLEX, font_scale, thickness, &baseline);
+  const cv::Point origin(8, std::max(18, rgb.rows - 12));
+  cv::Rect box(origin.x - 4,
+               origin.y - text_size.height - 4,
+               std::min(text_size.width + 8, std::max(0, rgb.cols - 8)),
+               text_size.height + 8);
+  box &= cv::Rect(0, 0, rgb.cols, rgb.rows);
+  if (box.width > 0 && box.height > 0) {
+    cv::rectangle(rgb, box, cv::Scalar(40, 40, 40), cv::FILLED);
+  }
+  cv::putText(rgb,
+              label.str(),
+              origin,
+              cv::FONT_HERSHEY_SIMPLEX,
+              font_scale,
+              cv::Scalar(255, 255, 255),
+              thickness,
+              cv::LINE_AA);
+}
+
 }  // namespace
 
 struct MosaicFrame {
@@ -503,6 +544,14 @@ void RtspServer::UpdateFaceExpressionResult(const vision::FaceExpressionResult& 
   face_expression_results_[result.camera_id] = result;
 }
 
+void RtspServer::UpdateAudioEventResult(const vision::AudioEventResult& result) {
+  if (result.source_id.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  audio_event_result_ = result;
+}
+
 void RtspServer::ClearMediapipeResult(const std::string& camera_id) {
   std::lock_guard<std::mutex> lock(overlay_mu_);
   mediapipe_results_.erase(camera_id);
@@ -516,6 +565,11 @@ void RtspServer::ClearYoloResult(const std::string& camera_id) {
 void RtspServer::ClearFaceExpressionResult(const std::string& camera_id) {
   std::lock_guard<std::mutex> lock(overlay_mu_);
   face_expression_results_.erase(camera_id);
+}
+
+void RtspServer::ClearAudioEventResult() {
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  audio_event_result_.reset();
 }
 
 std::optional<vision::MediapipeResult> RtspServer::LatestMediapipeResult(
@@ -548,6 +602,11 @@ std::optional<vision::FaceExpressionResult> RtspServer::LatestFaceExpressionResu
   return it->second;
 }
 
+std::optional<vision::AudioEventResult> RtspServer::LatestAudioEventResult() const {
+  std::lock_guard<std::mutex> lock(overlay_mu_);
+  return audio_event_result_;
+}
+
 std::optional<cv::Mat> RtspServer::BuildOverlayNv12(CameraStream* stream, GstSample* sample) const {
   if (stream == nullptr || sample == nullptr) {
     return std::nullopt;
@@ -562,6 +621,7 @@ std::optional<cv::Mat> RtspServer::BuildOverlayNv12(CameraStream* stream, GstSam
   const auto mediapipe_result = LatestMediapipeResult(stream->camera_id);
   const auto yolo_result = LatestYoloResult(stream->camera_id);
   const auto face_expression_result = LatestFaceExpressionResult(stream->camera_id);
+  const auto audio_event_result = LatestAudioEventResult();
   const bool has_mediapipe_overlay =
       mediapipe_result.has_value() && mediapipe_result->ok &&
       !mediapipe_result->hands.empty();
@@ -571,7 +631,11 @@ std::optional<cv::Mat> RtspServer::BuildOverlayNv12(CameraStream* stream, GstSam
   const bool has_face_expression_overlay =
       face_expression_result.has_value() && face_expression_result->ok &&
       !face_expression_result->faces.empty();
-  if (!has_mediapipe_overlay && !has_yolo_overlay && !has_face_expression_overlay) {
+  const bool has_audio_event_overlay =
+      audio_event_result.has_value() && audio_event_result->ok &&
+      !audio_event_result->events.empty();
+  if (!has_mediapipe_overlay && !has_yolo_overlay && !has_face_expression_overlay &&
+      !has_audio_event_overlay) {
     return std::nullopt;
   }
 
@@ -604,6 +668,9 @@ std::optional<cv::Mat> RtspServer::BuildOverlayNv12(CameraStream* stream, GstSam
   }
   if (has_face_expression_overlay) {
     DrawFaceExpressionOverlay(rgb, *face_expression_result);
+  }
+  if (has_audio_event_overlay) {
+    DrawAudioEventOverlay(rgb, *audio_event_result);
   }
 
   cv::Mat nv12;

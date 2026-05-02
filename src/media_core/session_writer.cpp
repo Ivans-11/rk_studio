@@ -219,6 +219,27 @@ void SessionWriter::WriteFaceExpressionLine(const std::string& line) {
   }
 }
 
+bool SessionWriter::OpenAudioEventWriter(std::string* err) {
+  if (!session_paths_) {
+    if (err) *err = "session not initialized";
+    return false;
+  }
+  audio_event_writer_ = std::make_unique<JsonlFileWriter>();
+  std::string audio_event_err;
+  if (!audio_event_writer_->Open(session_paths_->session_dir / "audio.events.jsonl", &audio_event_err)) {
+    std::cerr << "[audio] failed to open audio.events.jsonl: " << audio_event_err << "\n";
+    audio_event_writer_.reset();
+    return false;
+  }
+  return true;
+}
+
+void SessionWriter::WriteAudioEventLine(const std::string& line) {
+  if (audio_event_writer_) {
+    audio_event_writer_->WriteLine(line);
+  }
+}
+
 void SessionWriter::WriteStartMeta(const std::vector<rkinfra::OutputStreamInfo>& outputs) {
   if (session_paths_ && recording_config_) {
     rkinfra::WriteSessionMeta(*session_paths_, *recording_config_, "starting", recording_started_utc_,
@@ -240,6 +261,7 @@ void SessionWriter::Finalize(bool ok, const std::vector<rkinfra::OutputStreamInf
   mediapipe_writer_.reset();
   yolo_writer_.reset();
   face_expression_writer_.reset();
+  audio_event_writer_.reset();
   recording_config_.reset();
   session_paths_.reset();
   session_artifacts_.reset();

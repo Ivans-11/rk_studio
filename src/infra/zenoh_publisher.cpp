@@ -132,6 +132,10 @@ class ZenohPublisher::Impl {
     return Publish(key_prefix_ + "/face/" + camera_id + "/expression", payload);
   }
 
+  bool PublishAudioEvent(const std::string& source_id, const std::string& payload) {
+    return Publish(key_prefix_ + "/audio/" + source_id + "/events", payload);
+  }
+
   bool PublishJson(const std::string& key, const std::string& payload) {
     return Publish(key, payload);
   }
@@ -209,6 +213,10 @@ bool ZenohPublisher::PublishYolo(const std::string& camera_id, const std::string
 
 bool ZenohPublisher::PublishFaceExpression(const std::string& camera_id, const std::string& payload) {
   return impl_->PublishFaceExpression(camera_id, payload);
+}
+
+bool ZenohPublisher::PublishAudioEvent(const std::string& source_id, const std::string& payload) {
+  return impl_->PublishAudioEvent(source_id, payload);
 }
 
 bool ZenohPublisher::PublishJson(const std::string& key, const std::string& payload) {

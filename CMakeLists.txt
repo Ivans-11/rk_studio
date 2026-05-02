@@ -48,6 +48,7 @@ set(RK_STUDIO_SOURCES
   src/media_core/frame_converter.cpp
   src/media_core/v4l2_pipeline.cpp
   src/media_core/media_engine.cpp
+  src/media_core/audio_engine.cpp
   src/media_core/vision_engine.cpp
   src/media_core/session_writer.cpp
   src/media_core/rtsp_server.cpp
@@ -57,6 +58,7 @@ set(RK_STUDIO_SOURCES
   src/vision_core/mediapipe_processor.cpp
   src/vision_core/yolo_processor.cpp
   src/vision_core/face_expression_processor.cpp
+  src/vision_core/audio_event_processor.cpp
 )
 
 set(RK_STUDIO_MEDIAPIPE_SOURCES
@@ -82,6 +84,7 @@ set(RK_STUDIO_HEADERS
   include/rk_studio/media_core/frame_orientation.h
   include/rk_studio/media_core/v4l2_pipeline.h
   include/rk_studio/media_core/media_engine.h
+  include/rk_studio/media_core/audio_engine.h
   include/rk_studio/media_core/vision_engine.h
   include/rk_studio/media_core/session_writer.h
   include/rk_studio/ui/preview_tile_widget.h

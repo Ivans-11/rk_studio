@@ -37,8 +37,19 @@ class IFaceExpressionProcessor {
   virtual void Stop() = 0;
 };
 
+class IAudioEventProcessor {
+ public:
+  virtual ~IAudioEventProcessor() = default;
+
+  virtual bool Start(const AudioEventProcessorConfig& config, std::string* err) = 0;
+  virtual void Submit(const AudioPcmFrame& frame) = 0;
+  virtual std::optional<AudioEventResult> PollResult() = 0;
+  virtual void Stop() = 0;
+};
+
 std::unique_ptr<IMediapipeProcessor> CreateMediapipeProcessor();
 std::unique_ptr<IYoloProcessor> CreateYoloProcessor();
 std::unique_ptr<IFaceExpressionProcessor> CreateFaceExpressionProcessor();
+std::unique_ptr<IAudioEventProcessor> CreateAudioEventProcessor();
 
 }  // namespace rkstudio::vision

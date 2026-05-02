@@ -217,6 +217,18 @@ bool ValidateBoardConfig(const BoardConfig& config, std::string* err) {
       return false;
     }
   }
+  if (config.audio_event.has_value()) {
+    const auto& audio_event = *config.audio_event;
+    if (audio_event.fps <= 0 || audio_event.window_ms <= 0 ||
+        audio_event.hop_ms <= 0 || audio_event.top_k <= 0 ||
+        audio_event.score_threshold < 0.0 ||
+        audio_event.publish_threshold < 0.0) {
+      if (err) {
+        *err = "audio_event fps/window_ms/hop_ms/top_k/thresholds are invalid";
+      }
+      return false;
+    }
+  }
   if (config.zenoh.has_value()) {
     const auto& zenoh = *config.zenoh;
     if (zenoh.mode != "peer" && zenoh.mode != "client" && zenoh.mode != "router") {
@@ -500,6 +512,44 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
   }
   if (face.detector_model.empty() || face.expression_model.empty()) {
     parsed.face_expression.reset();
+  }
+
+  const bool has_audio_event_section = root["audio_event"].as_table() != nullptr;
+  if (const auto* audio_event_table = root["audio_event"].as_table()) {
+    static const std::unordered_set<std::string> kAllowed{
+        "model", "class_map", "fps", "window_ms", "hop_ms",
+        "top_k", "score_threshold", "publish_threshold"};
+    if (!RejectUnknownKeys(*audio_event_table, kAllowed, "audio_event", err)) {
+      return false;
+    }
+    AudioEventHardwareConfig audio_event;
+    if (!AssignValue(*audio_event_table, "model", &audio_event.model, "audio_event", err) ||
+        !AssignValue(*audio_event_table, "class_map", &audio_event.class_map, "audio_event", err) ||
+        !AssignValue(*audio_event_table, "fps", &audio_event.fps, "audio_event", err) ||
+        !AssignValue(*audio_event_table, "window_ms", &audio_event.window_ms, "audio_event", err) ||
+        !AssignValue(*audio_event_table, "hop_ms", &audio_event.hop_ms, "audio_event", err) ||
+        !AssignValue(*audio_event_table, "top_k", &audio_event.top_k, "audio_event", err) ||
+        !AssignValue(*audio_event_table, "score_threshold", &audio_event.score_threshold, "audio_event", err) ||
+        !AssignValue(*audio_event_table, "publish_threshold", &audio_event.publish_threshold, "audio_event", err)) {
+      return false;
+    }
+    parsed.audio_event = audio_event;
+  }
+
+  if (!parsed.audio_event.has_value()) {
+    parsed.audio_event = AudioEventHardwareConfig{};
+  }
+  auto& audio_event = *parsed.audio_event;
+  audio_event.model = ResolveConfigRelativePath(path, audio_event.model);
+  audio_event.class_map = ResolveConfigRelativePath(path, audio_event.class_map);
+  if (audio_event.model.empty()) {
+    audio_event.model = ResolveModelPath(path, "yamnet.onnx");
+  }
+  if (audio_event.class_map.empty()) {
+    audio_event.class_map = ResolveModelPath(path, "yamnet_class_map.csv");
+  }
+  if (!has_audio_event_section && (audio_event.model.empty() || audio_event.class_map.empty())) {
+    parsed.audio_event.reset();
   }
 
   if (const auto* rtsp_table = root["rtsp"].as_table()) {

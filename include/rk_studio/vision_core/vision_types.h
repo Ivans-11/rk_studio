@@ -155,4 +155,46 @@ struct FaceExpressionResult {
   std::string error;
 };
 
+struct AudioEventScore {
+  int class_id = -1;
+  std::string label;
+  float score = 0.0f;
+};
+
+struct AudioEventProcessorConfig {
+  std::string model;
+  std::string class_map;
+  int sample_rate = 16'000;
+  int channels = 1;
+  int queue_depth = 4;
+  int window_ms = 960;
+  int hop_ms = 480;
+  int top_k = 5;
+  float score_threshold = 0.20f;
+};
+
+struct AudioPcmFrame {
+  std::string source_id;
+  uint64_t pts_ns = 0;
+  int sample_rate = 16'000;
+  int channels = 1;
+  const int16_t* samples = nullptr;
+  size_t sample_count = 0;  // interleaved samples, including all channels
+};
+
+struct AudioEventResult {
+  std::string source_id;
+  uint64_t pts_ns = 0;
+  uint64_t center_pts_ns = 0;
+  int sample_rate = 16'000;
+  int window_ms = 960;
+  int hop_ms = 480;
+  float rms = 0.0f;
+  float peak = 0.0f;
+  std::vector<AudioEventScore> events;
+  float fps = 0.0f;
+  bool ok = false;
+  std::string error;
+};
+
 }  // namespace rkstudio::vision

@@ -13,12 +13,12 @@
 
 #ifndef Q_MOC_RUN
 #include "rk_studio/domain/session.h"
+#include "rk_studio/infra/gst_audio_recorder.h"
 #include "rk_studio/media_core/rtsp_server.h"
 #include "rk_studio/media_core/v4l2_pipeline.h"
 #endif
 
 namespace rkinfra {
-class GstAudioRecorder;
 struct OutputStreamInfo;
 }  // namespace rkinfra
 
@@ -39,20 +39,25 @@ class MediaEngine : public QObject {
   void ApplySessionProfile(const SessionProfile& profile);
   bool StartPreview(std::string* err);
   bool StartRecording(std::string* err);
+  bool StartAudioMonitor(std::string* err);
   bool StartRtsp(std::string* err);
   void StopPreview();
+  void StopAudioMonitor();
   void StopRecording(bool ok = true);
   void StopRtsp();
   void StopAll();
   void UpdateMediapipeResult(const vision::MediapipeResult& result);
   void UpdateYoloResult(const vision::YoloResult& result);
   void UpdateFaceExpressionResult(const vision::FaceExpressionResult& result);
+  void UpdateAudioEventResult(const vision::AudioEventResult& result);
   void ClearMediapipeResult(const std::string& camera_id);
   void ClearYoloResult(const std::string& camera_id);
   void ClearFaceExpressionResult(const std::string& camera_id);
+  void ClearAudioEventResult();
 
   void BindPreviewWindow(const std::string& camera_id, WId window_id);
   void BindPreviewFrameTarget(const std::string& camera_id, bool enabled);
+  void SetAudioPcmCallback(rkinfra::GstAudioRecorder::PcmCallback callback);
   void ObserveTelemetry(const TelemetryEvent& event);
   SessionWriter* session_writer() const { return session_writer_.get(); }
   const BoardConfig& board_config() const;
@@ -76,6 +81,7 @@ class MediaEngine : public QObject {
   void FinalizeRecording(bool ok);
   bool StartAudioRecorder(std::string* err);
   void StopAudioRecorder();
+  bool BuildAudioRecorder(bool record_to_file, std::string* err);
 
   BoardConfig board_config_;
   SessionProfile session_profile_;
@@ -84,6 +90,8 @@ class MediaEngine : public QObject {
   std::map<std::string, bool> preview_frame_targets_;
   std::unique_ptr<SessionWriter> session_writer_;
   std::unique_ptr<rkinfra::GstAudioRecorder> audio_recorder_;
+  std::unique_ptr<rkinfra::GstAudioRecorder> audio_monitor_;
+  rkinfra::GstAudioRecorder::PcmCallback audio_pcm_callback_;
   std::unique_ptr<RtspServer> rtsp_server_;
 };
 

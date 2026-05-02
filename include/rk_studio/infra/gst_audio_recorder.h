@@ -3,6 +3,8 @@
 #include <gst/gst.h>
 
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -21,11 +23,18 @@ namespace fs = std::filesystem;
 class GstAudioRecorder {
  public:
   using EventCallback = std::function<void(const StreamEvent&)>;
+  using PcmCallback = std::function<void(const std::string& source_id,
+                                         GstClockTime pts,
+                                         int sample_rate,
+                                         int channels,
+                                         const int16_t* samples,
+                                         size_t sample_count)>;
 
   GstAudioRecorder(AudioConfig config,
                    uint64_t queue_mux_max_time_ns,
                    EventCallback on_event,
-                   const fs::path& session_dir);
+                   const fs::path& session_dir,
+                   bool record_to_file = true);
   ~GstAudioRecorder();
 
   bool Build(std::string* err);
@@ -37,6 +46,7 @@ class GstAudioRecorder {
   const std::atomic<bool>& failure_flag() const;
   std::string failure_reason() const;
   const OutputStreamInfo& stream_output() const;
+  void SetPcmCallback(PcmCallback callback);
 
  private:
   struct ProbeContext {
@@ -62,6 +72,7 @@ class GstAudioRecorder {
   void PushEvent(StreamEvent event);
 
   static GstPadProbeReturn OnBufferProbe(GstPad* pad, GstPadProbeInfo* info, gpointer user_data);
+  static GstFlowReturn OnNewSample(GstElement* sink, gpointer user_data);
   static void OnQueueOverrun(GstElement* element, gpointer user_data);
 
   AudioConfig config_;
@@ -70,11 +81,15 @@ class GstAudioRecorder {
   fs::path session_dir_;
   fs::path output_path_;
   OutputStreamInfo output_;
+  bool record_to_file_ = true;
 
   GstElement* pipeline_ = nullptr;
   GstElement* source_ = nullptr;
   GstElement* caps_filter_ = nullptr;
+  GstElement* tee_ = nullptr;
   GstElement* queue_mux_ = nullptr;
+  GstElement* queue_app_ = nullptr;
+  GstElement* app_sink_ = nullptr;
   GstElement* wavenc_ = nullptr;
   GstElement* sink_ = nullptr;
 
@@ -88,6 +103,7 @@ class GstAudioRecorder {
 
   mutable std::mutex state_mu_;
   std::string failure_reason_;
+  PcmCallback pcm_callback_;
 
   std::vector<std::unique_ptr<ProbeContext>> probe_contexts_;
   std::vector<std::unique_ptr<QueueSignalContext>> queue_contexts_;

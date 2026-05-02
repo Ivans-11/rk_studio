@@ -5,6 +5,8 @@
 #include <sstream>
 #include <string>
 
+#include <gst/gst.h>
+
 namespace rkstudio::runtime {
 namespace {
 
@@ -37,11 +39,30 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
   qRegisterMetaType<rkstudio::vision::MediapipeResult>();
   qRegisterMetaType<rkstudio::vision::YoloResult>();
   qRegisterMetaType<rkstudio::vision::FaceExpressionResult>();
+  qRegisterMetaType<rkstudio::vision::AudioEventResult>();
   qRegisterMetaType<QImage>();
 
   media_engine_ = new media::MediaEngine(this);
   vision_engine_ = new media::VisionEngine(this);
+  audio_engine_ = new media::AudioEngine(this);
   vision_engine_->SetZenohPublisher(&zenoh_publisher_);
+  audio_engine_->SetZenohPublisher(&zenoh_publisher_);
+  media_engine_->SetAudioPcmCallback(
+      [this](const std::string& source_id,
+             GstClockTime pts,
+             int sample_rate,
+             int channels,
+             const int16_t* samples,
+             size_t sample_count) {
+        vision::AudioPcmFrame frame;
+        frame.source_id = source_id;
+        frame.pts_ns = GST_CLOCK_TIME_IS_VALID(pts) ? static_cast<uint64_t>(pts) : 0;
+        frame.sample_rate = sample_rate;
+        frame.channels = channels;
+        frame.samples = samples;
+        frame.sample_count = sample_count;
+        audio_engine_->SubmitPcmFrame(frame);
+      });
   entity_registration_timer_ = new QTimer(this);
   entity_registration_timer_->setInterval(5000);
   connect(entity_registration_timer_, &QTimer::timeout, this, [this]() {
@@ -79,6 +100,11 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
             media_engine_->UpdateFaceExpressionResult(result);
             emit FaceExpressionResultReady(result);
           });
+  connect(audio_engine_, &media::AudioEngine::AudioEventResultReady,
+          this, [this](const vision::AudioEventResult& result) {
+            media_engine_->UpdateAudioEventResult(result);
+            emit AudioEventResultReady(result);
+          });
 
   vision_engine_->SetCallbacks({
       [this](const TelemetryEvent& event) {
@@ -97,11 +123,13 @@ RuntimeManager::~RuntimeManager() {
 void RuntimeManager::LoadBoardConfig(const BoardConfig& board_config) {
   media_engine_->LoadBoardConfig(board_config);
   vision_engine_->LoadBoardConfig(board_config);
+  audio_engine_->LoadBoardConfig(board_config);
 }
 
 void RuntimeManager::ApplySessionProfile(const SessionProfile& profile) {
   media_engine_->ApplySessionProfile(profile);
   vision_engine_->ApplySessionProfile(profile);
+  audio_engine_->ApplySessionProfile(profile);
 }
 
 bool RuntimeManager::StartPreview(std::string* err) {
@@ -116,6 +144,7 @@ bool RuntimeManager::StartPreview(std::string* err) {
   }
 
   vision_engine_->SetSessionWriter(nullptr);
+  audio_engine_->SetSessionWriter(nullptr);
   if (!vision_engine_->SyncForState(AppState::kPreviewing, err)) {
     media_engine_->StopPreview();
     EnterErrorState();
@@ -142,7 +171,9 @@ bool RuntimeManager::StartRecording(std::string* err) {
   }
 
   vision_engine_->SetSessionWriter(media_engine_->session_writer());
+  audio_engine_->SetSessionWriter(media_engine_->session_writer());
   if (!vision_engine_->SyncForState(AppState::kRecording, err)) {
+    audio_engine_->SetSessionWriter(nullptr);
     vision_engine_->SetSessionWriter(nullptr);
     media_engine_->StopRecording(false);
     EnterErrorState();
@@ -198,8 +229,9 @@ bool RuntimeManager::ToggleResultPublishing(std::string* err) {
 
   if (!vision_engine_->mediapipe_enabled() &&
       !vision_engine_->yolo_enabled() &&
-      !vision_engine_->face_expression_enabled()) {
-    if (err) *err = "start Mediapipe, YOLO, or face expression before publishing recognition results";
+      !vision_engine_->face_expression_enabled() &&
+      !audio_engine_->audio_event_enabled()) {
+    if (err) *err = "start Mediapipe, YOLO, face expression, or audio event before publishing recognition results";
     return false;
   }
   if (!EnsureZenohStarted(err)) {
@@ -299,9 +331,14 @@ void RuntimeManager::StopRecording() {
   }
   vision_engine_->StopPipelines();
   vision_engine_->SetSessionWriter(nullptr);
+  audio_engine_->SetSessionWriter(nullptr);
   media_engine_->StopRecording(true);
   std::string err;
   if (!vision_engine_->SyncForState(AppState::kIdle, &err)) {
+    EnterErrorState();
+    return;
+  }
+  if (audio_engine_->audio_event_enabled() && !media_engine_->StartAudioMonitor(&err)) {
     EnterErrorState();
     return;
   }
@@ -338,13 +375,17 @@ void RuntimeManager::StopAll() {
   zenoh_publisher_.Stop();
   if (state_ == AppState::kRecording) {
     vision_engine_->StopAll();
+    audio_engine_->StopAll();
     vision_engine_->SetSessionWriter(nullptr);
+    audio_engine_->SetSessionWriter(nullptr);
     media_engine_->StopRecording(true);
   } else if (state_ == AppState::kStreaming) {
     media_engine_->StopRtsp();
     vision_engine_->StopAll();
+    audio_engine_->StopAll();
   } else {
     vision_engine_->StopAll();
+    audio_engine_->StopAll();
     media_engine_->StopAll();
   }
   SetState(AppState::kIdle);
@@ -374,7 +415,8 @@ bool RuntimeManager::ToggleMediapipe(bool enable, std::string* err) {
   }
   if (!vision_engine_->mediapipe_enabled() &&
       !vision_engine_->yolo_enabled() &&
-      !vision_engine_->face_expression_enabled()) {
+      !vision_engine_->face_expression_enabled() &&
+      !audio_engine_->audio_event_enabled()) {
     StopResultPublishing();
   }
   return true;
@@ -395,7 +437,8 @@ bool RuntimeManager::ToggleYolo(bool enable, std::string* err) {
   }
   if (!vision_engine_->mediapipe_enabled() &&
       !vision_engine_->yolo_enabled() &&
-      !vision_engine_->face_expression_enabled()) {
+      !vision_engine_->face_expression_enabled() &&
+      !audio_engine_->audio_event_enabled()) {
     StopResultPublishing();
   }
   return true;
@@ -416,7 +459,35 @@ bool RuntimeManager::ToggleFaceExpression(bool enable, std::string* err) {
   }
   if (!vision_engine_->mediapipe_enabled() &&
       !vision_engine_->yolo_enabled() &&
-      !vision_engine_->face_expression_enabled()) {
+      !vision_engine_->face_expression_enabled() &&
+      !audio_engine_->audio_event_enabled()) {
+    StopResultPublishing();
+  }
+  return true;
+}
+
+bool RuntimeManager::ToggleAudioEvent(bool enable, std::string* err) {
+  if (state_ == AppState::kRecording) {
+    if (err) *err = "cannot change audio event while recording";
+    return false;
+  }
+  audio_engine_->SetSessionWriter(nullptr);
+  if (!audio_engine_->ToggleAudioEvent(enable, err)) {
+    return false;
+  }
+  if (enable) {
+    if (!media_engine_->StartAudioMonitor(err)) {
+      audio_engine_->ToggleAudioEvent(false, nullptr);
+      return false;
+    }
+  } else {
+    media_engine_->StopAudioMonitor();
+    media_engine_->ClearAudioEventResult();
+  }
+  if (!vision_engine_->mediapipe_enabled() &&
+      !vision_engine_->yolo_enabled() &&
+      !vision_engine_->face_expression_enabled() &&
+      !audio_engine_->audio_event_enabled()) {
     StopResultPublishing();
   }
   return true;
@@ -432,6 +503,10 @@ bool RuntimeManager::yolo_enabled() const {
 
 bool RuntimeManager::face_expression_enabled() const {
   return vision_engine_->face_expression_enabled();
+}
+
+bool RuntimeManager::audio_event_enabled() const {
+  return audio_engine_->audio_event_enabled();
 }
 
 bool RuntimeManager::zenoh_enabled() const {
@@ -466,6 +541,7 @@ void RuntimeManager::SetState(AppState state) {
 void RuntimeManager::EnterErrorState() {
   vision_engine_->StopPipelines();
   vision_engine_->SetSessionWriter(nullptr);
+  audio_engine_->SetSessionWriter(nullptr);
   SetState(AppState::kError);
 }
 
@@ -485,6 +561,7 @@ void RuntimeManager::OnFatalCameraFailure() {
   }
   vision_engine_->StopPipelines();
   vision_engine_->SetSessionWriter(nullptr);
+  audio_engine_->SetSessionWriter(nullptr);
   media_engine_->StopRecording(false);
   SetState(AppState::kError);
 }

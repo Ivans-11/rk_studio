@@ -38,6 +38,16 @@ nms_threshold = 0.4
 expression_threshold = 0.35
 max_faces = 1
 
+[audio_event]
+model = "../models/yamnet.onnx"
+class_map = "../models/yamnet_class_map.csv"
+fps = 2
+window_ms = 960
+hop_ms = 480
+top_k = 5
+score_threshold = 0.20
+publish_threshold = 0.30
+
 [audio.mic0]
 device = "hw:rockchipes8388,0"
 
