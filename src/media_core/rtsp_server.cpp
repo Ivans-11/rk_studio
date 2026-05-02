@@ -585,6 +585,10 @@ std::optional<cv::Mat> RtspServer::BuildOverlayNv12(CameraStream* stream, GstSam
   if (!CopyNv12SampleToTightMat(sample, info, &input_nv12) || input_nv12.empty()) {
     return std::nullopt;
   }
+  input_nv12 = ApplyNv12Orientation(input_nv12, stream->orientation);
+  if (input_nv12.empty()) {
+    return std::nullopt;
+  }
 
   cv::Mat rgb;
   cv::cvtColor(input_nv12, rgb, cv::COLOR_YUV2RGB_NV12);
@@ -970,7 +974,7 @@ void RtspServer::PushMosaicSample(RtspRoute* route, CameraStream* stream, GstSam
 
   auto overlay_nv12 = BuildOverlayNv12(stream, sample);
   if (overlay_nv12.has_value() && !overlay_nv12->empty()) {
-    frame.nv12 = ApplyNv12Orientation(*overlay_nv12, stream->orientation);
+    frame.nv12 = std::move(*overlay_nv12);
     frame.stride = static_cast<int>(frame.nv12.step[0]);
   } else {
     if (!CopyNv12SampleToTightMat(sample, info, &frame.nv12)) {

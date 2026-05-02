@@ -63,6 +63,11 @@ class ResultOverlayWidget final : public QWidget {
     update();
   }
 
+  void SetFrameContentRect(const std::optional<QRectF>& rect) {
+    frame_content_rect_ = rect;
+    update();
+  }
+
  protected:
   void paintEvent(QPaintEvent*) override {
     QPainter painter(this);
@@ -87,12 +92,19 @@ class ResultOverlayWidget final : public QWidget {
     return QRectF(target.left(), target.top(), source_w, source_h);
   }
 
-  static QPointF MapPoint(const QRect& target,
-                          int source_w,
-                          int source_h,
-                          float x,
-                          float y) {
-    const QRectF content = VideoContentRect(target, source_w, source_h);
+  QRectF CurrentContentRect(const QRect& target, int source_w, int source_h) const {
+    if (frame_content_rect_.has_value()) {
+      return *frame_content_rect_;
+    }
+    return VideoContentRect(target, source_w, source_h);
+  }
+
+  QPointF MapPoint(const QRect& target,
+                   int source_w,
+                   int source_h,
+                   float x,
+                   float y) const {
+    const QRectF content = CurrentContentRect(target, source_w, source_h);
     const float scale_x = static_cast<float>(content.width()) /
                           static_cast<float>(std::max(1, source_w));
     const float scale_y = static_cast<float>(content.height()) /
@@ -118,7 +130,7 @@ class ResultOverlayWidget final : public QWidget {
       return;
     }
     const auto [source_w, source_h] = CurrentSourceSize();
-    const QRectF content = VideoContentRect(target, source_w, source_h);
+    const QRectF content = CurrentContentRect(target, source_w, source_h);
 
     painter.setBrush(Qt::NoBrush);
     painter.setPen(QPen(QColor(255, 0, 0), 2));
@@ -280,6 +292,7 @@ class ResultOverlayWidget final : public QWidget {
   std::optional<vision::MediapipeResult> mediapipe_result_;
   std::optional<vision::YoloResult> yolo_result_;
   std::optional<vision::FaceExpressionResult> face_expression_result_;
+  std::optional<QRectF> frame_content_rect_;
 };
 
 }  // namespace
@@ -472,8 +485,14 @@ void PreviewTileWidget::SetPreviewFrame(const QImage& frame) {
   sink_host_->hide();
   frame_label_->show();
   UpdateVideoGeometry();
-  frame_label_->setPixmap(QPixmap::fromImage(preview_frame_).scaled(
-      frame_label_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+  const QPixmap scaled = QPixmap::fromImage(preview_frame_).scaled(
+      frame_label_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+  frame_label_->setPixmap(scaled);
+  const qreal x = (frame_label_->width() - scaled.width()) / 2.0;
+  const qreal y = (frame_label_->height() - scaled.height()) / 2.0;
+  if (auto* overlay = static_cast<ResultOverlayWidget*>(overlay_)) {
+    overlay->SetFrameContentRect(QRectF(x, y, scaled.width(), scaled.height()));
+  }
   UpdateOverlayGeometry();
 }
 
@@ -485,6 +504,9 @@ void PreviewTileWidget::ClearPreviewFrame() {
   }
   if (sink_host_ != nullptr) {
     sink_host_->show();
+  }
+  if (auto* overlay = static_cast<ResultOverlayWidget*>(overlay_)) {
+    overlay->SetFrameContentRect(std::nullopt);
   }
   UpdateOverlayGeometry();
 }
@@ -500,8 +522,14 @@ bool PreviewTileWidget::eventFilter(QObject* watched, QEvent* event) {
     QTimer::singleShot(0, this, [this] {
       UpdateVideoGeometry();
       if (frame_label_ != nullptr && frame_label_->isVisible() && !preview_frame_.isNull()) {
-        frame_label_->setPixmap(QPixmap::fromImage(preview_frame_).scaled(
-            frame_label_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        const QPixmap scaled = QPixmap::fromImage(preview_frame_).scaled(
+            frame_label_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        frame_label_->setPixmap(scaled);
+        const qreal x = (frame_label_->width() - scaled.width()) / 2.0;
+        const qreal y = (frame_label_->height() - scaled.height()) / 2.0;
+        if (auto* overlay = static_cast<ResultOverlayWidget*>(overlay_)) {
+          overlay->SetFrameContentRect(QRectF(x, y, scaled.width(), scaled.height()));
+        }
       }
       UpdateOverlayGeometry();
     });
