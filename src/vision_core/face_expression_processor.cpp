@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -19,7 +20,6 @@
 namespace rkstudio::vision {
 namespace {
 
-constexpr int kDetectorInputSize = 320;
 constexpr int kExpressionInputSize = 112;
 constexpr int kDetectorHeadCount = 3;
 constexpr std::array<int, kDetectorHeadCount> kDetectorStrides = {8, 16, 32};
@@ -136,6 +136,20 @@ bool IsNchwLayout(const rknn_tensor_attr& attr) {
   return attr.fmt == RKNN_TENSOR_NCHW;
 }
 
+cv::Size TensorSizeFromAttr(const rknn_tensor_attr& attr) {
+  if (attr.n_dims < 4) {
+    return {};
+  }
+  const auto is_channel_dim = [](uint32_t dim) {
+    return dim == 1 || dim == 3 || dim == 4;
+  };
+  if ((IsNchwLayout(attr) || is_channel_dim(attr.dims[1])) &&
+      !is_channel_dim(attr.dims[3])) {
+    return cv::Size(static_cast<int>(attr.dims[3]), static_cast<int>(attr.dims[2]));
+  }
+  return cv::Size(static_cast<int>(attr.dims[2]), static_cast<int>(attr.dims[1]));
+}
+
 int InferLastDim(const rknn_tensor_attr& attr, size_t buffer_size) {
   if (attr.n_dims == 0 || buffer_size == 0) {
     return 0;
@@ -192,11 +206,68 @@ struct DetectorOutputGroup {
   const rknn_tensor_attr* kps_attr = nullptr;
 };
 
+bool HasChannels(const rknn_tensor_attr& attr, const std::vector<float>& output, int channels) {
+  return InferLastDim(attr, output.size()) == channels;
+}
+
+bool BuildYunetOrderedGroups(const std::vector<std::vector<float>>& outputs,
+                             const std::vector<rknn_tensor_attr>& attrs,
+                             const cv::Size& detector_input_size,
+                             std::vector<DetectorOutputGroup>* groups) {
+  if (groups == nullptr || outputs.size() < 12 || attrs.size() < 12 ||
+      detector_input_size.width <= 0) {
+    return false;
+  }
+
+  std::vector<DetectorOutputGroup> ordered_groups;
+  ordered_groups.reserve(kDetectorHeadCount);
+  for (int head = 0; head < kDetectorHeadCount; ++head) {
+    const size_t cls_index = static_cast<size_t>(head);
+    const size_t obj_index = static_cast<size_t>(head + 3);
+    const size_t bbox_index = static_cast<size_t>(head + 6);
+    const size_t kps_index = static_cast<size_t>(head + 9);
+
+    if (!HasChannels(attrs[cls_index], outputs[cls_index], 1) ||
+        !HasChannels(attrs[obj_index], outputs[obj_index], 1) ||
+        !HasChannels(attrs[bbox_index], outputs[bbox_index], 4) ||
+        !HasChannels(attrs[kps_index], outputs[kps_index], 10)) {
+      return false;
+    }
+
+    const int locations = InferLocationCount(attrs[cls_index], outputs[cls_index].size());
+    const int grid = static_cast<int>(std::round(std::sqrt(static_cast<float>(locations))));
+    if (locations <= 0 || grid <= 0 || grid * grid != locations ||
+        detector_input_size.width % grid != 0) {
+      return false;
+    }
+
+    DetectorOutputGroup group;
+    group.stride = detector_input_size.width / grid;
+    group.locations = locations;
+    group.cls = &outputs[cls_index];
+    group.obj = &outputs[obj_index];
+    group.bbox = &outputs[bbox_index];
+    group.kps = &outputs[kps_index];
+    group.cls_attr = &attrs[cls_index];
+    group.obj_attr = &attrs[obj_index];
+    group.bbox_attr = &attrs[bbox_index];
+    group.kps_attr = &attrs[kps_index];
+    ordered_groups.push_back(group);
+  }
+
+  *groups = std::move(ordered_groups);
+  return true;
+}
+
 std::vector<DetectorOutputGroup> GroupDetectorOutputs(
     const std::vector<std::vector<float>>& outputs,
-    const std::vector<rknn_tensor_attr>& attrs) {
+    const std::vector<rknn_tensor_attr>& attrs,
+    const cv::Size& detector_input_size) {
   std::vector<DetectorOutputGroup> groups;
   if (outputs.size() != attrs.size()) {
+    return groups;
+  }
+  if (BuildYunetOrderedGroups(outputs, attrs, detector_input_size, &groups)) {
     return groups;
   }
 
@@ -211,7 +282,10 @@ std::vector<DetectorOutputGroup> GroupDetectorOutputs(
     if (grid <= 0 || grid * grid != locations) {
       continue;
     }
-    const int stride = kDetectorInputSize / grid;
+    if (detector_input_size.width <= 0 || detector_input_size.width % grid != 0) {
+      continue;
+    }
+    const int stride = detector_input_size.width / grid;
     int group_index = -1;
     for (int head = 0; head < kDetectorHeadCount; ++head) {
       if (kDetectorStrides[head] == stride) {
@@ -264,12 +338,13 @@ std::vector<DetectorOutputGroup> GroupDetectorOutputs(
 std::vector<FaceExpressionResultItem> DecodeDetectorOutputs(
     const std::vector<std::vector<float>>& outputs,
     const std::vector<rknn_tensor_attr>& attrs,
+    const cv::Size& detector_input_size,
     const mediapipe_demo::PreprocessMeta& meta,
     int frame_w,
     int frame_h,
     float conf_threshold) {
   std::vector<FaceExpressionResultItem> faces;
-  const auto groups = GroupDetectorOutputs(outputs, attrs);
+  const auto groups = GroupDetectorOutputs(outputs, attrs, detector_input_size);
   for (const auto& group : groups) {
     const int grid = group.locations > 0
                          ? static_cast<int>(std::round(std::sqrt(static_cast<float>(group.locations))))
@@ -523,15 +598,25 @@ class FaceExpressionProcessor final : public IFaceExpressionProcessor {
       return result;
     }
 
+    if (!detector_model_) {
+      result.error = "face detector RKNN model is not running";
+      return result;
+    }
+    const cv::Size detector_input_size = TensorSizeFromAttr(detector_model_->InputAttr());
+    if (detector_input_size.width <= 0 || detector_input_size.height <= 0) {
+      result.error = "invalid face detector input shape";
+      return result;
+    }
+
     mediapipe_demo::PreprocessMeta meta;
     cv::Mat detector_input = mediapipe_demo::LetterboxPadding(
-        rgb, cv::Size(kDetectorInputSize, kDetectorInputSize), &meta);
+        rgb, detector_input_size, &meta);
     if (!detector_input.isContinuous()) {
       detector_input = detector_input.clone();
     }
 
     std::vector<std::vector<float>> detector_outputs;
-    if (!detector_model_ || !detector_model_->Infer(detector_input, &detector_outputs)) {
+    if (!detector_model_->Infer(detector_input, &detector_outputs)) {
       result.error = "face detector RKNN inference failed";
       return result;
     }
@@ -539,6 +624,7 @@ class FaceExpressionProcessor final : public IFaceExpressionProcessor {
     std::vector<FaceExpressionResultItem> faces = DecodeDetectorOutputs(
         detector_outputs,
         detector_model_->OutputAttrs(),
+        detector_input_size,
         meta,
         frame.width,
         frame.height,

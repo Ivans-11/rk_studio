@@ -13,3 +13,4 @@ config/profile.toml
 .DS_Store
 
 .local
+records/
