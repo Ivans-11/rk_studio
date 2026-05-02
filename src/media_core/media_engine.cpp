@@ -5,11 +5,14 @@
 #include <memory>
 #include <utility>
 
+#include <QImage>
 #include <QMetaObject>
 
 #include "rk_studio/infra/config_types.h"
 #include "rk_studio/infra/gst_audio_recorder.h"
 #include "rk_studio/infra/session_files.h"
+#include "rk_studio/media_core/frame_converter.h"
+#include "rk_studio/media_core/frame_orientation.h"
 #include "rk_studio/media_core/session_writer.h"
 
 namespace rkstudio::media {
@@ -60,6 +63,7 @@ TelemetryEvent FromInfraStreamEvent(const rkinfra::StreamEvent& event) {
 
 MediaEngine::MediaEngine(QObject* parent) : QObject(parent) {
   qRegisterMetaType<rkstudio::TelemetryEvent>();
+  qRegisterMetaType<QImage>();
 }
 
 MediaEngine::~MediaEngine() {
@@ -193,6 +197,10 @@ void MediaEngine::BindPreviewWindow(const std::string& camera_id, WId window_id)
   }
 }
 
+void MediaEngine::BindPreviewFrameTarget(const std::string& camera_id, bool enabled) {
+  preview_frame_targets_[camera_id] = enabled;
+}
+
 void MediaEngine::ObserveTelemetry(const TelemetryEvent& event) {
   EmitTelemetry(event);
 }
@@ -221,7 +229,6 @@ std::unique_ptr<V4l2Pipeline> MediaEngine::BuildOnePipeline(
   options.source.device = camera->record_device;
   options.source.input_format = camera->input_format;
   options.source.io_mode = camera->io_mode;
-  options.source.orientation = camera->orientation;
   options.source.width = recording ? camera->record_width : camera->preview_width;
   options.source.height = recording ? camera->record_height : camera->preview_height;
   options.source.fps = camera->fps;
@@ -230,14 +237,42 @@ std::unique_ptr<V4l2Pipeline> MediaEngine::BuildOnePipeline(
   options.record.session_dir = (session_writer_ && session_writer_->session_paths())
       ? session_writer_->session_paths()->session_dir
       : std::filesystem::path(session_profile_.output_dir);
+  const bool frame_preview = !recording &&
+                             IsOriented(camera->orientation) &&
+                             preview_frame_targets_[camera_id] &&
+                             Contains(session_profile_.preview_cameras, camera_id);
   if (const auto it = preview_window_ids_.find(camera_id); it != preview_window_ids_.end()) {
     options.preview.window_id = it->second;
   }
-  options.preview.enabled = !recording
+  options.preview.enabled = !frame_preview
+                             && !recording
                              && preview_window_ids_.count(camera_id) > 0
                              && Contains(session_profile_.preview_cameras, camera_id);
   options.record.enabled = recording && Contains(session_profile_.record_cameras, camera_id);
   options.record.gop = session_profile_.gop;
+  if (frame_preview) {
+    options.app_sink.enabled = true;
+    options.app_sink.sample_callback = [this, camera_id, orientation = camera->orientation](GstSample* sample) {
+      FrameConverter converter;
+      auto rgb_frame = converter.ConvertToRgbFrame(sample, camera_id);
+      if (!rgb_frame.has_value() || rgb_frame->mapped_ptr == nullptr) {
+        return;
+      }
+      cv::Mat rgb(rgb_frame->height, rgb_frame->width, CV_8UC3,
+                  const_cast<uint8_t*>(rgb_frame->mapped_ptr),
+                  rgb_frame->stride > 0 ? rgb_frame->stride : rgb_frame->width * 3);
+      cv::Mat oriented = ApplyMatOrientation(rgb, orientation);
+      if (oriented.empty()) {
+        return;
+      }
+      QImage image(oriented.data,
+                   oriented.cols,
+                   oriented.rows,
+                   static_cast<int>(oriented.step[0]),
+                   QImage::Format_RGB888);
+      emit PreviewFrameReady(QString::fromStdString(camera_id), image.copy());
+    };
+  }
 
   if (!pipeline->Build(
           options, [this](const TelemetryEvent& event) { EmitTelemetry(event); },

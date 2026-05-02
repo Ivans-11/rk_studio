@@ -44,6 +44,7 @@ set(RK_STUDIO_SOURCES
   src/domain/config.cpp
   src/domain/session.cpp
   src/runtime/runtime_manager.cpp
+  src/media_core/frame_orientation.cpp
   src/media_core/frame_converter.cpp
   src/media_core/v4l2_pipeline.cpp
   src/media_core/media_engine.cpp
@@ -78,6 +79,7 @@ set(RK_STUDIO_HEADERS
   include/rk_studio/vision_core/vision_types.h
   include/rk_studio/vision_core/vision_processor.h
   include/rk_studio/media_core/frame_converter.h
+  include/rk_studio/media_core/frame_orientation.h
   include/rk_studio/media_core/v4l2_pipeline.h
   include/rk_studio/media_core/media_engine.h
   include/rk_studio/media_core/vision_engine.h

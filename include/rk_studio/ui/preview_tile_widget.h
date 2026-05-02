@@ -2,6 +2,7 @@
 
 #include <QEvent>
 #include <QFrame>
+#include <QImage>
 #include <QLabel>
 #include <QWidget>
 
@@ -25,6 +26,8 @@ class PreviewTileWidget : public QWidget {
   void ClearYoloResult();
   void SetFaceExpressionResult(const vision::FaceExpressionResult& result);
   void ClearFaceExpressionResult();
+  void SetPreviewFrame(const QImage& frame);
+  void ClearPreviewFrame();
 
  signals:
   void WindowRebound(QString camera_id, WId window_id);
@@ -42,8 +45,10 @@ class PreviewTileWidget : public QWidget {
   QLabel* status_ = nullptr;
   QWidget* video_container_ = nullptr;
   QFrame* sink_host_ = nullptr;
+  QLabel* frame_label_ = nullptr;
   QWidget* overlay_ = nullptr;
   QWidget* tracked_window_ = nullptr;
+  QImage preview_frame_;
 };
 
 }  // namespace rkstudio::ui

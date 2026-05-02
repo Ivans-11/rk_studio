@@ -9,11 +9,13 @@
 #include <utility>
 
 #include <gst/gst.h>
+#include <opencv2/imgproc.hpp>
 #include <QMetaObject>
 
 #include "rk_studio/infra/runtime.h"
 #include "rk_studio/infra/session_files.h"
 #include "rk_studio/infra/zenoh_publisher.h"
+#include "rk_studio/media_core/frame_orientation.h"
 #include "rk_studio/media_core/session_writer.h"
 #include "rk_studio/vision_core/vision_processor.h"
 
@@ -138,6 +140,56 @@ rkstudio::vision::YoloResult FilterYoloResultForOutput(
     }
   }
   return output;
+}
+
+std::optional<vision::FrameRef> RotateRgbFrame(
+    std::optional<vision::FrameRef> frame,
+    const std::string& orientation) {
+  if (!frame.has_value() || !IsOriented(orientation) ||
+      frame->pixel_format != vision::PixelFormat::kRgb ||
+      frame->mapped_ptr == nullptr) {
+    return frame;
+  }
+
+  cv::Mat input(frame->height, frame->width, CV_8UC3,
+                const_cast<uint8_t*>(frame->mapped_ptr),
+                frame->stride > 0 ? frame->stride : frame->width * 3);
+  cv::Mat oriented = ApplyMatOrientation(input, orientation);
+  if (oriented.empty()) {
+    return frame;
+  }
+
+  auto holder = std::make_shared<cv::Mat>(std::move(oriented));
+  frame->width = holder->cols;
+  frame->height = holder->rows;
+  frame->stride = static_cast<int>(holder->step[0]);
+  frame->mapped_ptr = holder->data;
+  frame->bytes_used = holder->total() * holder->elemSize();
+  frame->dmabuf_fd = -1;
+  frame->owned_data = holder;
+  return frame;
+}
+
+std::optional<vision::FrameRef> RgbFrameToBgr(
+    std::optional<vision::FrameRef> frame) {
+  if (!frame.has_value() ||
+      frame->pixel_format != vision::PixelFormat::kRgb ||
+      frame->mapped_ptr == nullptr) {
+    return frame;
+  }
+  cv::Mat rgb(frame->height, frame->width, CV_8UC3,
+              const_cast<uint8_t*>(frame->mapped_ptr),
+              frame->stride > 0 ? frame->stride : frame->width * 3);
+  cv::Mat bgr;
+  cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
+  auto holder = std::make_shared<cv::Mat>(std::move(bgr));
+  frame->stride = static_cast<int>(holder->step[0]);
+  frame->pixel_format = vision::PixelFormat::kBgr;
+  frame->mapped_ptr = holder->data;
+  frame->bytes_used = holder->total() * holder->elemSize();
+  frame->dmabuf_fd = -1;
+  frame->owned_data = holder;
+  return frame;
 }
 
 }  // namespace
@@ -416,7 +468,6 @@ std::unique_ptr<V4l2Pipeline> VisionEngine::BuildVisionPipeline(
   options.source.device = selfpath_device;
   options.source.input_format = camera->input_format;
   options.source.io_mode = camera->io_mode;
-  options.source.orientation = camera->orientation;
   options.source.width = camera->preview_width;
   options.source.height = camera->preview_height;
   options.source.fps = fps;
@@ -522,6 +573,7 @@ void VisionEngine::OnMediapipeSample(GstSample* sample) {
     camera_id = mediapipe_camera_id_;
   }
   auto rgb_frame = frame_converter_.ConvertToRgbFrame(sample, camera_id);
+  rgb_frame = RotateRgbFrame(std::move(rgb_frame), CameraOrientation(camera_id));
   if (!rgb_frame.has_value()) {
     return;
   }
@@ -687,7 +739,15 @@ void VisionEngine::OnYoloSample(GstSample* sample) {
     std::lock_guard<std::mutex> lock(yolo_frame_mu_);
     camera_id = yolo_camera_id_;
   }
-  auto raw_frame = frame_converter_.ExtractNv12Frame(sample, camera_id);
+  std::optional<vision::FrameRef> raw_frame;
+  const std::string orientation = CameraOrientation(camera_id);
+  if (IsOriented(orientation)) {
+    raw_frame = frame_converter_.ConvertToRgbFrame(sample, camera_id);
+    raw_frame = RotateRgbFrame(std::move(raw_frame), orientation);
+    raw_frame = RgbFrameToBgr(std::move(raw_frame));
+  } else {
+    raw_frame = frame_converter_.ExtractNv12Frame(sample, camera_id);
+  }
   if (!raw_frame.has_value()) {
     return;
   }
@@ -781,6 +841,7 @@ void VisionEngine::OnFaceExpressionSample(GstSample* sample) {
     camera_id = face_expression_camera_id_;
   }
   auto rgb_frame = frame_converter_.ConvertToRgbFrame(sample, camera_id);
+  rgb_frame = RotateRgbFrame(std::move(rgb_frame), CameraOrientation(camera_id));
   if (!rgb_frame.has_value()) {
     return;
   }
@@ -813,6 +874,11 @@ void VisionEngine::PollFaceExpressionResults() {
     }
     emit FaceExpressionResultReady(*result);
   }
+}
+
+std::string VisionEngine::CameraOrientation(const std::string& camera_id) const {
+  const CameraNodeSet* camera = FindCamera(board_config_, camera_id);
+  return camera != nullptr ? camera->orientation : "normal";
 }
 
 }  // namespace rkstudio::media

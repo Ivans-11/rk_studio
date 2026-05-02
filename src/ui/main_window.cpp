@@ -62,6 +62,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(runtime_manager_, &runtime::RuntimeManager::StateChanged, this, &MainWindow::OnStateChanged);
   connect(runtime_manager_, &runtime::RuntimeManager::TelemetryObserved, this, &MainWindow::OnTelemetryObserved);
   connect(runtime_manager_, &runtime::RuntimeManager::PreviewCameraFailed, this, &MainWindow::OnPreviewFailure);
+  connect(runtime_manager_, &runtime::RuntimeManager::PreviewFrameReady, this, &MainWindow::OnPreviewFrame);
   connect(runtime_manager_, &runtime::RuntimeManager::MediapipeResultReady, this, &MainWindow::OnMediapipeResult);
   connect(runtime_manager_, &runtime::RuntimeManager::YoloResultReady, this, &MainWindow::OnYoloResult);
   connect(runtime_manager_, &runtime::RuntimeManager::FaceExpressionResultReady,
@@ -163,6 +164,12 @@ void MainWindow::RebuildTiles() {
     connect(tile, &PreviewTileWidget::WindowRebound, this, &MainWindow::OnTileRebound);
     grid->addWidget(tile, row, col);
     tiles_.insert_or_assign(camera_id, tile);
+    const CameraNodeSet* camera = FindCamera(runtime_manager_->board_config(), profile.preview_cameras[i]);
+    const bool frame_preview = camera != nullptr && camera->orientation != "normal";
+    runtime_manager_->BindPreviewFrameTarget(profile.preview_cameras[i], frame_preview);
+    if (!frame_preview) {
+      tile->ClearPreviewFrame();
+    }
     runtime_manager_->BindPreviewWindow(profile.preview_cameras[i], tile->sink_window_id());
   }
 }
@@ -394,6 +401,12 @@ void MainWindow::OnPreviewFailure(QString camera_id, QString reason, bool fatal)
 
 void MainWindow::OnTileRebound(QString camera_id, WId window_id) {
   runtime_manager_->BindPreviewWindow(camera_id.toStdString(), window_id);
+}
+
+void MainWindow::OnPreviewFrame(QString camera_id, QImage frame) {
+  if (const auto it = tiles_.find(camera_id); it != tiles_.end()) {
+    it->second->SetPreviewFrame(frame);
+  }
 }
 
 void MainWindow::ToggleMediapipe() {

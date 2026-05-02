@@ -7,8 +7,10 @@
 #include <utility>
 
 #include <QFont>
+#include <QImage>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QPixmap>
 #include <QPoint>
 #include <QRectF>
 #include <QSize>
@@ -306,6 +308,11 @@ PreviewTileWidget::PreviewTileWidget(QString camera_id, QWidget* parent)
   sink_host_->setAttribute(Qt::WA_DontCreateNativeAncestors);
   sink_host_->setMinimumSize(320, 180);
   sink_host_->installEventFilter(this);
+  frame_label_ = new QLabel(video_container_);
+  frame_label_->setAlignment(Qt::AlignCenter);
+  frame_label_->setStyleSheet("background: #000;");
+  frame_label_->hide();
+  frame_label_->installEventFilter(this);
   installEventFilter(this);
 
   // Keep the drawing layer outside the native video window. Painting a
@@ -371,6 +378,9 @@ void PreviewTileWidget::UpdateVideoGeometry() {
   if (sink_host_->geometry() != video_rect) {
     sink_host_->setGeometry(video_rect);
   }
+  if (frame_label_ != nullptr && frame_label_->geometry() != video_rect) {
+    frame_label_->setGeometry(video_rect);
+  }
 }
 
 void PreviewTileWidget::UpdateOverlayGeometry() {
@@ -388,13 +398,17 @@ void PreviewTileWidget::UpdateOverlayGeometry() {
       tracked_window_->installEventFilter(this);
     }
   }
-  if (!isVisible() || !sink_host_->isVisible() || window() == nullptr ||
-      window()->isMinimized()) {
+  QWidget* video_widget = sink_host_;
+  if (frame_label_ != nullptr && frame_label_->isVisible()) {
+    video_widget = frame_label_;
+  }
+  if (!isVisible() || video_widget == nullptr || !video_widget->isVisible() ||
+      window() == nullptr || window()->isMinimized()) {
     overlay_->hide();
     return;
   }
 
-  const QRect global_rect(sink_host_->mapToGlobal(QPoint(0, 0)), sink_host_->size());
+  const QRect global_rect(video_widget->mapToGlobal(QPoint(0, 0)), video_widget->size());
   if (overlay_->geometry() != global_rect) {
     overlay_->setGeometry(global_rect);
   }
@@ -450,14 +464,45 @@ void PreviewTileWidget::ClearFaceExpressionResult() {
   }
 }
 
+void PreviewTileWidget::SetPreviewFrame(const QImage& frame) {
+  if (frame_label_ == nullptr) {
+    return;
+  }
+  preview_frame_ = frame.copy();
+  sink_host_->hide();
+  frame_label_->show();
+  UpdateVideoGeometry();
+  frame_label_->setPixmap(QPixmap::fromImage(preview_frame_).scaled(
+      frame_label_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+  UpdateOverlayGeometry();
+}
+
+void PreviewTileWidget::ClearPreviewFrame() {
+  preview_frame_ = QImage();
+  if (frame_label_ != nullptr) {
+    frame_label_->clear();
+    frame_label_->hide();
+  }
+  if (sink_host_ != nullptr) {
+    sink_host_->show();
+  }
+  UpdateOverlayGeometry();
+}
+
 bool PreviewTileWidget::eventFilter(QObject* watched, QEvent* event) {
-  if ((watched == sink_host_ || watched == video_container_ || watched == this || watched == tracked_window_) &&
+  if ((watched == sink_host_ || watched == frame_label_ || watched == video_container_ ||
+       watched == this || watched == tracked_window_) &&
       (event->type() == QEvent::Resize ||
        event->type() == QEvent::Move ||
        event->type() == QEvent::Show ||
        event->type() == QEvent::Hide ||
        event->type() == QEvent::WindowStateChange)) {
     QTimer::singleShot(0, this, [this] {
+      UpdateVideoGeometry();
+      if (frame_label_ != nullptr && frame_label_->isVisible() && !preview_frame_.isNull()) {
+        frame_label_->setPixmap(QPixmap::fromImage(preview_frame_).scaled(
+            frame_label_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+      }
       UpdateOverlayGeometry();
     });
   }

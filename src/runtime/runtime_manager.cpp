@@ -37,6 +37,7 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
   qRegisterMetaType<rkstudio::vision::MediapipeResult>();
   qRegisterMetaType<rkstudio::vision::YoloResult>();
   qRegisterMetaType<rkstudio::vision::FaceExpressionResult>();
+  qRegisterMetaType<QImage>();
 
   media_engine_ = new media::MediaEngine(this);
   vision_engine_ = new media::VisionEngine(this);
@@ -58,6 +59,8 @@ RuntimeManager::RuntimeManager(QObject* parent) : QObject(parent) {
           this, &RuntimeManager::TelemetryObserved);
   connect(media_engine_, &media::MediaEngine::PreviewCameraFailed,
           this, &RuntimeManager::PreviewCameraFailed);
+  connect(media_engine_, &media::MediaEngine::PreviewFrameReady,
+          this, &RuntimeManager::PreviewFrameReady);
   connect(media_engine_, &media::MediaEngine::FatalCameraFailure,
           this, &RuntimeManager::OnFatalCameraFailure);
 
@@ -349,6 +352,10 @@ void RuntimeManager::StopAll() {
 
 void RuntimeManager::BindPreviewWindow(const std::string& camera_id, WId window_id) {
   media_engine_->BindPreviewWindow(camera_id, window_id);
+}
+
+void RuntimeManager::BindPreviewFrameTarget(const std::string& camera_id, bool enabled) {
+  media_engine_->BindPreviewFrameTarget(camera_id, enabled);
 }
 
 bool RuntimeManager::ToggleMediapipe(bool enable, std::string* err) {

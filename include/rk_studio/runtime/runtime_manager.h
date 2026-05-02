@@ -3,6 +3,7 @@
 #include <string>
 
 #include <QObject>
+#include <QImage>
 #include <QTimer>
 #include <QtGui/qwindowdefs.h>
 
@@ -34,6 +35,7 @@ class RuntimeManager : public QObject {
   void StopAll();
 
   void BindPreviewWindow(const std::string& camera_id, WId window_id);
+  void BindPreviewFrameTarget(const std::string& camera_id, bool enabled);
   bool ToggleMediapipe(bool enable, std::string* err);
   bool ToggleYolo(bool enable, std::string* err);
   bool ToggleFaceExpression(bool enable, std::string* err);
@@ -52,6 +54,7 @@ class RuntimeManager : public QObject {
   void StateChanged(rkstudio::AppState state);
   void TelemetryObserved(rkstudio::TelemetryEvent event);
   void PreviewCameraFailed(QString camera_id, QString reason, bool fatal);
+  void PreviewFrameReady(QString camera_id, QImage frame);
   void MediapipeResultReady(rkstudio::vision::MediapipeResult result);
   void YoloResultReady(rkstudio::vision::YoloResult result);
   void FaceExpressionResultReady(rkstudio::vision::FaceExpressionResult result);

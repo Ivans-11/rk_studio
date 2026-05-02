@@ -53,19 +53,6 @@ std::string BranchSummary(const V4l2Pipeline::BuildOptions& options) {
   return branches.empty() ? "none" : branches;
 }
 
-int OrientationToVideoflipMethod(const std::string& orientation) {
-  if (orientation == "rotate-180") {
-    return 2;
-  }
-  if (orientation == "horizontal-flip") {
-    return 4;
-  }
-  if (orientation == "vertical-flip") {
-    return 5;
-  }
-  return -1;
-}
-
 }  // namespace
 
 V4l2Pipeline::V4l2Pipeline() = default;
@@ -91,7 +78,6 @@ bool V4l2Pipeline::Build(const BuildOptions& options,
             << " size=" << options_.source.width << "x" << options_.source.height
             << " fps=" << options_.source.fps << "/1"
             << " io=" << options_.source.io_mode
-            << " orientation=" << options_.source.orientation
             << " branches=" << BranchSummary(options_)
             << "\n";
 
@@ -128,10 +114,6 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
 
   rate_filter_ = gst_element_factory_make("videorate", ("videorate_" + options_.source.id).c_str());
   rate_caps_ = gst_element_factory_make("capsfilter", ("rate_caps_" + options_.source.id).c_str());
-  const int videoflip_method = OrientationToVideoflipMethod(options_.source.orientation);
-  if (videoflip_method >= 0) {
-    orientation_filter_ = gst_element_factory_make("videoflip", ("orientation_" + options_.source.id).c_str());
-  }
 
   if (options_.preview.enabled) {
     preview_convert_ = gst_element_factory_make("videoconvert", ("preview_convert_" + options_.source.id).c_str());
@@ -154,7 +136,6 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
 
   if (!pipeline_ || !source_ || !source_caps_ ||
       !rate_filter_ || !rate_caps_ ||
-      (videoflip_method >= 0 && !orientation_filter_) ||
       (options_.preview.enabled && (!preview_convert_ || !preview_sink_)) ||
       (options_.record.enabled && (!encoder_ || !parser_ || !mux_ || !record_sink_)) ||
       (options_.app_sink.enabled && (!appsink_queue_ || !app_sink_))) {
@@ -185,10 +166,6 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
   g_object_set(G_OBJECT(rate_caps_), "caps", rate_caps, nullptr);
   gst_caps_unref(rate_caps);
 
-  if (orientation_filter_ != nullptr) {
-    rkinfra::SetPropertyIfExists(orientation_filter_, "method", videoflip_method);
-  }
-
   if (options_.preview.enabled) {
     rkinfra::SetPropertyIfExists(preview_sink_, "sync", FALSE);
   }
@@ -212,9 +189,6 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
   // Add elements to pipeline.
   gst_bin_add_many(GST_BIN(pipeline_), source_, source_caps_, nullptr);
   gst_bin_add_many(GST_BIN(pipeline_), rate_filter_, rate_caps_, nullptr);
-  if (orientation_filter_ != nullptr) {
-    gst_bin_add(GST_BIN(pipeline_), orientation_filter_);
-  }
   if (options_.preview.enabled) {
     gst_bin_add_many(GST_BIN(pipeline_), preview_convert_, preview_sink_, nullptr);
   }
@@ -236,16 +210,6 @@ bool V4l2Pipeline::BuildPipeline(std::string* err) {
     }
     return false;
   }
-  if (orientation_filter_ != nullptr) {
-    if (!gst_element_link(source_tail, orientation_filter_)) {
-      if (err != nullptr) {
-        *err = "failed to link orientation filter for " + options_.source.id;
-      }
-      return false;
-    }
-    source_tail = orientation_filter_;
-  }
-
   auto LinkRecordChain = [&]() -> bool {
     if (!gst_element_link_many(encoder_, parser_, nullptr) || !gst_element_link(mux_, record_sink_)) {
       if (err) *err = "failed to link record chain for " + options_.source.id;
@@ -374,7 +338,6 @@ void V4l2Pipeline::Stop() {
   source_caps_ = nullptr;
   rate_filter_ = nullptr;
   rate_caps_ = nullptr;
-  orientation_filter_ = nullptr;
   preview_convert_ = nullptr;
   preview_sink_ = nullptr;
   encoder_ = nullptr;

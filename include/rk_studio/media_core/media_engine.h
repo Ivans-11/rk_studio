@@ -5,6 +5,7 @@
 #include <string>
 
 #include <QObject>
+#include <QImage>
 #include <QtGui/qwindowdefs.h>
 
 #include "rk_studio/domain/types.h"
@@ -51,6 +52,7 @@ class MediaEngine : public QObject {
   void ClearFaceExpressionResult(const std::string& camera_id);
 
   void BindPreviewWindow(const std::string& camera_id, WId window_id);
+  void BindPreviewFrameTarget(const std::string& camera_id, bool enabled);
   void ObserveTelemetry(const TelemetryEvent& event);
   SessionWriter* session_writer() const { return session_writer_.get(); }
   const BoardConfig& board_config() const;
@@ -59,6 +61,7 @@ class MediaEngine : public QObject {
  signals:
   void TelemetryObserved(rkstudio::TelemetryEvent event);
   void PreviewCameraFailed(QString camera_id, QString reason, bool fatal);
+  void PreviewFrameReady(QString camera_id, QImage frame);
   void FatalCameraFailure();
 
  private:
@@ -78,6 +81,7 @@ class MediaEngine : public QObject {
   SessionProfile session_profile_;
   CameraMap cameras_;
   std::map<std::string, WId> preview_window_ids_;
+  std::map<std::string, bool> preview_frame_targets_;
   std::unique_ptr<SessionWriter> session_writer_;
   std::unique_ptr<rkinfra::GstAudioRecorder> audio_recorder_;
   std::unique_ptr<RtspServer> rtsp_server_;

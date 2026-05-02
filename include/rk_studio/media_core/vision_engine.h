@@ -99,6 +99,7 @@ class VisionEngine : public QObject {
   void StopFaceExpressionPipeline();
   void OnFaceExpressionSample(GstSample* sample);
   void PollFaceExpressionResults();
+  std::string CameraOrientation(const std::string& camera_id) const;
 
   BoardConfig board_config_;
   SessionProfile session_profile_;

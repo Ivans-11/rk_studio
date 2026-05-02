@@ -25,7 +25,6 @@ class V4l2Pipeline {
     std::string device;
     std::string input_format = "NV12";
     std::string io_mode = "dmabuf";
-    std::string orientation = "normal";
     int width = 640;
     int height = 360;
     int fps = 30;
@@ -106,7 +105,6 @@ class V4l2Pipeline {
   GstElement* source_caps_ = nullptr;
   GstElement* rate_filter_ = nullptr;
   GstElement* rate_caps_ = nullptr;
-  GstElement* orientation_filter_ = nullptr;
 
   GstElement* preview_convert_ = nullptr;
   GstElement* preview_sink_ = nullptr;

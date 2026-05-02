@@ -6,6 +6,7 @@
 #include <QMainWindow>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QImage>
 
 #include "rk_studio/runtime/runtime_manager.h"
 #include "rk_studio/ui/preview_tile_widget.h"
@@ -33,6 +34,7 @@ class MainWindow : public QMainWindow {
   void OnTelemetryObserved(rkstudio::TelemetryEvent event);
   void OnPreviewFailure(QString camera_id, QString reason, bool fatal);
   void OnTileRebound(QString camera_id, WId window_id);
+  void OnPreviewFrame(QString camera_id, QImage frame);
   void OnMediapipeResult(rkstudio::vision::MediapipeResult result);
   void OnYoloResult(rkstudio::vision::YoloResult result);
   void OnFaceExpressionResult(rkstudio::vision::FaceExpressionResult result);

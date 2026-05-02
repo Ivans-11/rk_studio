@@ -21,6 +21,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "rk_studio/media_core/frame_orientation.h"
 #include "rk_studio/media_core/v4l2_pipeline.h"
 
 namespace rkstudio::media {
@@ -441,6 +442,7 @@ struct RtspServer::CameraStream {
   int width = 0;
   int height = 0;
   int fps = 30;
+  std::string orientation = "normal";
   V4l2Pipeline::BuildOptions capture_options;
   std::unique_ptr<V4l2Pipeline> capture;
 
@@ -968,12 +970,13 @@ void RtspServer::PushMosaicSample(RtspRoute* route, CameraStream* stream, GstSam
 
   auto overlay_nv12 = BuildOverlayNv12(stream, sample);
   if (overlay_nv12.has_value() && !overlay_nv12->empty()) {
-    frame.nv12 = std::move(*overlay_nv12);
+    frame.nv12 = ApplyNv12Orientation(*overlay_nv12, stream->orientation);
     frame.stride = static_cast<int>(frame.nv12.step[0]);
   } else {
     if (!CopyNv12SampleToTightMat(sample, info, &frame.nv12)) {
       return;
     }
+    frame.nv12 = ApplyNv12Orientation(frame.nv12, stream->orientation);
     frame.stride = static_cast<int>(frame.nv12.step[0]);
   }
 
@@ -1097,9 +1100,28 @@ void RtspServer::PushRtspSample(CameraStream* stream, GstSample* sample) {
     }
   }
 
-  GstBuffer* output = stream->owner != nullptr
-      ? stream->owner->BuildOverlayBuffer(stream, sample)
-      : gst_buffer_copy(input);
+  GstBuffer* output = nullptr;
+  if (stream->owner != nullptr) {
+    output = stream->owner->BuildOverlayBuffer(stream, sample);
+  } else if (IsOriented(stream->orientation)) {
+    GstCaps* caps = gst_sample_get_caps(sample);
+    GstVideoInfo info;
+    cv::Mat nv12;
+    if (caps != nullptr &&
+        gst_video_info_from_caps(&info, caps) &&
+        CopyNv12SampleToTightMat(sample, info, &nv12)) {
+      const cv::Mat oriented = ApplyNv12Orientation(nv12, stream->orientation);
+      if (!oriented.empty()) {
+        const size_t bytes = oriented.total() * oriented.elemSize();
+        output = gst_buffer_new_allocate(nullptr, bytes, nullptr);
+        if (output != nullptr) {
+          gst_buffer_fill(output, 0, oriented.data, bytes);
+        }
+      }
+    }
+  } else {
+    output = gst_buffer_copy(input);
+  }
   if (output == nullptr) {
     gst_object_unref(appsrc);
     return;
@@ -1182,13 +1204,13 @@ bool RtspServer::Start(const BoardConfig& board, const SessionProfile& profile, 
     stream->width = width;
     stream->height = height;
     stream->fps = cam.fps;
+    stream->orientation = cam.orientation;
 
     V4l2Pipeline::BuildOptions options;
     options.source.id = cam.id + "_rtsp_" + stream_key;
     options.source.device = cam.record_device;
     options.source.input_format = cam.input_format;
     options.source.io_mode = cam.io_mode;
-    options.source.orientation = cam.orientation;
     options.source.width = width;
     options.source.height = height;
     options.source.fps = cam.fps;
