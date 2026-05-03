@@ -119,7 +119,8 @@ void MainWindow::BuildUi() {
   summary_label_->setWordWrap(true);
   audio_event_label_ = new QLabel(QStringLiteral("当前声音:\n--"), side_panel);
   audio_event_label_->setWordWrap(true);
-  audio_event_label_->setStyleSheet("color: #d8d8d8;");
+  audio_event_label_->setStyleSheet("color: #2f2f2f; font-weight: 500;");
+  audio_event_label_->hide();
   log_view_ = new QPlainTextEdit(side_panel);
   log_view_->setReadOnly(true);
   log_view_->setMaximumBlockCount(1000);
@@ -397,6 +398,9 @@ void MainWindow::OnStateChanged(rkstudio::AppState state) {
   audio_event_toggle_button_->setEnabled(row.audio_event_enabled &&
                                         runtime_manager_->board_config().audio_event.has_value() &&
                                         !runtime_manager_->session_profile().audio_source.empty());
+  if (audio_event_label_ != nullptr) {
+    audio_event_label_->setVisible(runtime_manager_->audio_event_enabled());
+  }
   state_label_->setText(QString("状态: %1").arg(row.label));
 }
 
@@ -553,6 +557,7 @@ void MainWindow::ToggleAudioEvent() {
   }
   if (!enabling && audio_event_label_ != nullptr) {
     audio_event_label_->setText(QStringLiteral("当前声音:\n--"));
+    audio_event_label_->hide();
   }
   OnStateChanged(runtime_manager_->state());
 }
@@ -561,6 +566,11 @@ void MainWindow::OnAudioEventResult(rkstudio::vision::AudioEventResult result) {
   if (audio_event_label_ == nullptr) {
     return;
   }
+  if (!runtime_manager_->audio_event_enabled()) {
+    audio_event_label_->hide();
+    return;
+  }
+  audio_event_label_->show();
   if (!result.ok) {
     AppendLog(QString("[audio] %1 error: %2")
                   .arg(QString::fromStdString(result.source_id))
