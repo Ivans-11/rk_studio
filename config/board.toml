@@ -39,7 +39,7 @@ expression_threshold = 0.2
 max_faces = 1
 
 [audio_event]
-model = "../models/yamnet.onnx"
+model = "../models/yamnet_feature_rk3588_int8.rknn"
 class_map = "../models/yamnet_class_map.csv"
 fps = 2
 window_ms = 960

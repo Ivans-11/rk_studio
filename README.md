@@ -121,7 +121,7 @@ nms_threshold = 0.45
 max_detections = 50
 
 [audio_event]
-model = "../models/yamnet.onnx"
+model = "../models/yamnet_feature_rk3588_int8.rknn"
 class_map = "../models/yamnet_class_map.csv"
 fps = 2
 window_ms = 960
@@ -226,7 +226,7 @@ records/rk_studio-YYYYMMDD-HHMMSS/
 └── audio.events.jsonl
 ```
 
-模型结果 jsonl 只保留核心字段；需要更多字段时再扩展。当前音频事件识别已打通实时展示、记录、RTSP 叠加和 Zenoh 发布链路；YAMNet ONNX Runtime 后端仍需在板端补齐依赖后替换当前规则占位后端。
+模型结果 jsonl 只保留核心字段；需要更多字段时再扩展。
 
 ## 上板测试清单
 

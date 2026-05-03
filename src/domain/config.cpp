@@ -543,7 +543,7 @@ bool LoadBoardConfig(const std::string& path, BoardConfig* config, std::string* 
   audio_event.model = ResolveConfigRelativePath(path, audio_event.model);
   audio_event.class_map = ResolveConfigRelativePath(path, audio_event.class_map);
   if (audio_event.model.empty()) {
-    audio_event.model = ResolveModelPath(path, "yamnet.onnx");
+    audio_event.model = ResolveModelPath(path, "yamnet_feature_rk3588_int8.rknn");
   }
   if (audio_event.class_map.empty()) {
     audio_event.class_map = ResolveModelPath(path, "yamnet_class_map.csv");
