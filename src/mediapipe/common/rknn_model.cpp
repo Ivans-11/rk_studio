@@ -37,8 +37,11 @@ RknnModel::~RknnModel() {
   Reset();
 }
 
-bool RknnModel::Load(const std::string& model_path, int core_mask) {
+bool RknnModel::Load(const std::string& model_path,
+                     int core_mask,
+                     bool force_uint8_input) {
   Reset();
+  force_uint8_input_ = force_uint8_input;
   if (!ReadBinaryFile(model_path, &model_data_)) {
     return false;
   }
@@ -70,6 +73,7 @@ bool RknnModel::Load(const std::string& model_path, int core_mask) {
     Reset();
     return false;
   }
+  model_input_attrs_ = input_attrs_;
   if (!PrepareIoMemories()) {
     Reset();
     return false;
@@ -151,12 +155,20 @@ const std::vector<rknn_tensor_attr>& RknnModel::InputAttrs() const {
   return input_attrs_;
 }
 
+const std::vector<rknn_tensor_attr>& RknnModel::ModelInputAttrs() const {
+  return model_input_attrs_;
+}
+
 const std::vector<rknn_tensor_attr>& RknnModel::OutputAttrs() const {
   return output_attrs_;
 }
 
 const rknn_tensor_attr& RknnModel::InputAttr(size_t index) const {
   return input_attrs_.at(index);
+}
+
+const rknn_tensor_attr& RknnModel::ModelInputAttr(size_t index) const {
+  return model_input_attrs_.at(index);
 }
 
 rknn_tensor_mem* RknnModel::InputMemory(size_t index) {
@@ -184,8 +196,10 @@ bool RknnModel::QueryAttrs(rknn_query_cmd query,
 bool RknnModel::PrepareIoMemories() {
   input_mems_.assign(input_attrs_.size(), nullptr);
   for (size_t i = 0; i < input_attrs_.size(); ++i) {
-    input_attrs_[i].type = RKNN_TENSOR_UINT8;
-    input_attrs_[i].fmt = RKNN_TENSOR_NHWC;
+    if (force_uint8_input_) {
+      input_attrs_[i].type = RKNN_TENSOR_UINT8;
+      input_attrs_[i].fmt = RKNN_TENSOR_NHWC;
+    }
     const uint32_t mem_size =
         input_attrs_[i].size_with_stride > 0 ? input_attrs_[i].size_with_stride
                                              : input_attrs_[i].size;
@@ -240,6 +254,8 @@ void RknnModel::Reset() {
     context_ = 0;
   }
   io_num_ = {};
+  force_uint8_input_ = true;
+  model_input_attrs_.clear();
   input_attrs_.clear();
   output_attrs_.clear();
   output_buffers_.clear();

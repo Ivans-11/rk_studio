@@ -317,7 +317,7 @@ class YamnetRknnBackend {
                 << config.class_map << "\n";
       return false;
     }
-    if (!model_.Load(config.model)) {
+    if (!model_.Load(config.model, -1, false)) {
       labels_.clear();
       std::cerr << "[audio] YAMNet RKNN model unavailable, using rule fallback: "
                 << config.model << "\n";
@@ -332,7 +332,7 @@ class YamnetRknnBackend {
     if (patch.empty() || patch.type() != CV_32FC1) {
       return {};
     }
-    const cv::Mat input = QuantizePatchToInputType(patch, model_.InputAttr());
+    const cv::Mat input = QuantizePatchToInputType(patch, model_.ModelInputAttr());
     if (input.empty()) {
       return {};
     }
