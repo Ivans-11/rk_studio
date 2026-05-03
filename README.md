@@ -76,6 +76,16 @@ cmake --build build -j$(nproc)
 ./build/rk_studio
 ```
 
+除图形界面外，项目还会生成命令行入口：
+
+```bash
+./build/rk_studio_cli record --duration 600
+./build/rk_studio_cli record --duration 600 --output records/test01 --recognize face,audio
+./build/rk_studio_cli rtsp --recognize all
+```
+
+CLI 只支持录制和 RTSP 推流。`--recognize` 可选 `none`、`all`、`hand`、`yolo`、`face`、`audio` 或逗号分隔组合；录制开始后识别组合冻结，停止使用 `Ctrl+C` 或 `--duration` 到时自动退出。
+
 默认 camera 节点：
 
 ```text

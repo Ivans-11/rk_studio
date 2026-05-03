@@ -37,9 +37,8 @@ set(RK_STUDIO_INFRA_SOURCES
   src/infra/telemetry.cpp
   src/infra/session_files.cpp
 )
-# Application sources.
-set(RK_STUDIO_SOURCES
-  src/main.cpp
+# Core application sources shared by the GUI and CLI entry points.
+set(RK_STUDIO_CORE_SOURCES
   src/domain/types.cpp
   src/domain/config.cpp
   src/domain/session.cpp
@@ -52,13 +51,21 @@ set(RK_STUDIO_SOURCES
   src/media_core/vision_engine.cpp
   src/media_core/session_writer.cpp
   src/media_core/rtsp_server.cpp
-  src/ui/preview_tile_widget.cpp
-  src/ui/main_window.cpp
   src/vision_core/coco_labels.cpp
   src/vision_core/mediapipe_processor.cpp
   src/vision_core/yolo_processor.cpp
   src/vision_core/face_expression_processor.cpp
   src/vision_core/audio_event_processor.cpp
+)
+
+set(RK_STUDIO_GUI_SOURCES
+  src/main.cpp
+  src/ui/preview_tile_widget.cpp
+  src/ui/main_window.cpp
+)
+
+set(RK_STUDIO_CLI_SOURCES
+  src/cli/main_cli.cpp
 )
 
 set(RK_STUDIO_MEDIAPIPE_SOURCES
@@ -72,7 +79,7 @@ set(RK_STUDIO_MEDIAPIPE_SOURCES
   src/mediapipe/tracking/one_euro_filter.cpp
 )
 
-set(RK_STUDIO_HEADERS
+set(RK_STUDIO_CORE_HEADERS
   include/rk_studio/domain/types.h
   include/rk_studio/domain/config.h
   include/rk_studio/domain/session.h
@@ -87,8 +94,6 @@ set(RK_STUDIO_HEADERS
   include/rk_studio/media_core/audio_engine.h
   include/rk_studio/media_core/vision_engine.h
   include/rk_studio/media_core/session_writer.h
-  include/rk_studio/ui/preview_tile_widget.h
-  include/rk_studio/ui/main_window.h
   include/rk_studio/infra/runtime.h
   include/rk_studio/infra/gst_util.h
   include/rk_studio/infra/config_types.h
@@ -98,11 +103,18 @@ set(RK_STUDIO_HEADERS
   include/rk_studio/infra/session_files.h
 )
 
+set(RK_STUDIO_GUI_HEADERS
+  include/rk_studio/ui/preview_tile_widget.h
+  include/rk_studio/ui/main_window.h
+)
+
 add_executable(rk_studio)
 target_sources(rk_studio PRIVATE
-  ${RK_STUDIO_SOURCES}
+  ${RK_STUDIO_CORE_SOURCES}
+  ${RK_STUDIO_GUI_SOURCES}
   ${RK_STUDIO_MEDIAPIPE_SOURCES}
-  ${RK_STUDIO_HEADERS}
+  ${RK_STUDIO_CORE_HEADERS}
+  ${RK_STUDIO_GUI_HEADERS}
   ${RK_STUDIO_INFRA_SOURCES}
 )
 
@@ -129,3 +141,35 @@ target_link_libraries(rk_studio
 )
 
 target_compile_options(rk_studio PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(rk_studio_cli)
+target_sources(rk_studio_cli PRIVATE
+  ${RK_STUDIO_CORE_SOURCES}
+  ${RK_STUDIO_CLI_SOURCES}
+  ${RK_STUDIO_MEDIAPIPE_SOURCES}
+  ${RK_STUDIO_CORE_HEADERS}
+  ${RK_STUDIO_INFRA_SOURCES}
+)
+
+target_include_directories(rk_studio_cli
+  PRIVATE
+    ${RK_STUDIO_ROOT}/include
+    ${RK_STUDIO_ROOT}/include/mediapipe
+    ${RK_STUDIO_ROOT}/third_party/rknn
+    ${RK_STUDIO_ROOT}/third_party/tomlplusplus
+    ${OpenCV_INCLUDE_DIRS}
+)
+
+target_link_libraries(rk_studio_cli
+  PRIVATE
+    Qt5::Core
+    Qt5::Gui
+    Threads::Threads
+    PkgConfig::GST
+    ${OpenCV_LIBS}
+    zenohc::lib
+    rknnrt
+    rga
+)
+
+target_compile_options(rk_studio_cli PRIVATE -Wall -Wextra -Wpedantic)

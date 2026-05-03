@@ -1,5 +1,6 @@
 [session]
 preview_cameras = ["cam0", "cam1", "cam2", "cam3"]
+record_cameras = ["cam0", "cam1", "cam2", "cam3"]
 prefix = "rk_studio"
 audio_source = "mic0"
 selected_mediapipe_camera = "cam0"
