@@ -191,9 +191,9 @@ DftTables BuildDftTables() {
   return tables;
 }
 
-std::array<float, kYamnetFftBins> PowerSpectrum(const std::vector<float>& samples,
-                                                size_t frame_start,
-                                                size_t window_start) {
+std::array<float, kYamnetFftBins> MagnitudeSpectrum(const std::vector<float>& samples,
+                                                    size_t frame_start,
+                                                    size_t window_start) {
   static const auto window = HannWindow();
   static const auto tables = BuildDftTables();
   std::array<float, kYamnetFftBins> power{};
@@ -209,7 +209,7 @@ std::array<float, kYamnetFftBins> PowerSpectrum(const std::vector<float>& sample
       real += sample * tables.cos[static_cast<size_t>(bin)][static_cast<size_t>(n)];
       imag += sample * tables.sin[static_cast<size_t>(bin)][static_cast<size_t>(n)];
     }
-    power[static_cast<size_t>(bin)] = real * real + imag * imag;
+    power[static_cast<size_t>(bin)] = std::sqrt(real * real + imag * imag);
   }
   return power;
 }
@@ -223,11 +223,11 @@ cv::Mat BuildYamnetLogMelPatch(const std::vector<float>& samples, size_t start) 
   const auto& mel_weights = MelWeights();
   for (int frame_idx = 0; frame_idx < kYamnetPatchFrames; ++frame_idx) {
     const size_t frame_start = start + static_cast<size_t>(frame_idx * kYamnetFrameStep);
-    const auto power = PowerSpectrum(samples, frame_start, start);
+    const auto magnitude = MagnitudeSpectrum(samples, frame_start, start);
     for (int mel_bin = 0; mel_bin < kYamnetMelBins; ++mel_bin) {
       float mel_energy = 0.0f;
       for (int fft_bin = 0; fft_bin < kYamnetFftBins; ++fft_bin) {
-        mel_energy += power[static_cast<size_t>(fft_bin)] *
+        mel_energy += magnitude[static_cast<size_t>(fft_bin)] *
                       mel_weights[static_cast<size_t>(fft_bin)][static_cast<size_t>(mel_bin)];
       }
       patch.at<float>(frame_idx, mel_bin) = std::log(mel_energy + kYamnetLogOffset);
@@ -236,19 +236,52 @@ cv::Mat BuildYamnetLogMelPatch(const std::vector<float>& samples, size_t start) 
   return patch;
 }
 
-cv::Mat QuantizePatchToUint8(const cv::Mat& patch) {
+cv::Mat QuantizePatchToInputType(const cv::Mat& patch,
+                                 const rknn_tensor_attr& attr) {
   if (patch.empty() || patch.type() != CV_32FC1) {
     return {};
   }
-  cv::Mat quantized(patch.rows, patch.cols, CV_8UC1);
-  for (int y = 0; y < patch.rows; ++y) {
-    for (int x = 0; x < patch.cols; ++x) {
-      const float value = patch.at<float>(y, x);
-      const int q = static_cast<int>(std::lround((value + 10.0f) * 12.75f));
-      quantized.at<uint8_t>(y, x) = static_cast<uint8_t>(std::clamp(q, 0, 255));
-    }
+  if (attr.type == RKNN_TENSOR_FLOAT32) {
+    return patch.clone();
   }
-  return quantized;
+
+  if (attr.type == RKNN_TENSOR_UINT8) {
+    const float scale = attr.qnt_type == RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC &&
+                                std::abs(attr.scale) > 1e-9f
+                            ? attr.scale
+                            : 1.0f;
+    const int zp = attr.qnt_type == RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC ? attr.zp : 0;
+    cv::Mat quantized(patch.rows, patch.cols, CV_8UC1);
+    for (int y = 0; y < patch.rows; ++y) {
+      for (int x = 0; x < patch.cols; ++x) {
+        const float value = patch.at<float>(y, x);
+        const int q = static_cast<int>(std::lround(value / scale)) + zp;
+        quantized.at<uint8_t>(y, x) = static_cast<uint8_t>(std::clamp(q, 0, 255));
+      }
+    }
+    return quantized;
+  }
+
+  if (attr.type == RKNN_TENSOR_INT8) {
+    const float scale = attr.qnt_type == RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC &&
+                                std::abs(attr.scale) > 1e-9f
+                            ? attr.scale
+                            : 1.0f;
+    const int zp = attr.qnt_type == RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC ? attr.zp : 0;
+    cv::Mat quantized(patch.rows, patch.cols, CV_8SC1);
+    for (int y = 0; y < patch.rows; ++y) {
+      for (int x = 0; x < patch.cols; ++x) {
+        const float value = patch.at<float>(y, x);
+        const int q = static_cast<int>(std::lround(value / scale)) + zp;
+        quantized.at<int8_t>(y, x) = static_cast<int8_t>(std::clamp(q, -128, 127));
+      }
+    }
+    return quantized;
+  }
+
+  std::cerr << "[audio] unsupported RKNN input tensor type for YAMNet: "
+            << static_cast<int>(attr.type) << "\n";
+  return {};
 }
 
 std::vector<AudioEventScore> TopScores(const std::vector<float>& scores,
@@ -299,7 +332,7 @@ class YamnetRknnBackend {
     if (patch.empty() || patch.type() != CV_32FC1) {
       return {};
     }
-    const cv::Mat input = QuantizePatchToUint8(patch);
+    const cv::Mat input = QuantizePatchToInputType(patch, model_.InputAttr());
     if (input.empty()) {
       return {};
     }
